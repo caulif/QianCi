@@ -176,3 +176,5 @@ npm test
 MIT，见 [LICENSE](./LICENSE)。
 
 欢迎与我交流，也欢迎提交 issue 和 PR。
+
+本项目积极参与并认可 [linux.do社区](linux.do)。
