@@ -1,30 +1,84 @@
 # 潜词 QianCi
 
-潜词是一个极简浏览器扩展，专注在一个场景里把事情做好：当你阅读英文网页时，它会尽量安静地标出你大概率不认识的词，并在你需要时给出非常短的中文释义。
+> A minimal browser extension for predictive English word lookup while reading.
 
-它不是整页翻译器，也不是学习平台。它更像一个克制的阅读助手。
+[![License: MIT](https://img.shields.io/badge/License-MIT-111111.svg)](./LICENSE)
+[![Manifest V3](https://img.shields.io/badge/Manifest-V3-2563eb.svg)](https://developer.chrome.com/docs/extensions/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Vite-0f172a.svg)](./package.json)
 
-## 现在能做什么
+潜词是一个极简浏览器扩展，专门服务一个场景：
 
-- 预判英文网页正文中的可能生词，并用低干扰虚线标注
-- 悬停或点击标注词显示极简释义卡片
-- `Alt + 选词` 手动查词
-- 右键菜单手动查词
-- 点击“认识”后移除标注，并记入熟词
-- 自动记录生词与熟词
-- 设置初始词汇水位线
-- 切换划线颜色
-- 切换悬停 / 点击触发模式
-- 对不在本地词库中的单词做联网补查，并写入本地缓存
+**当你阅读英文网页时，它安静地标出你可能不认识的词，并在你需要时给出很短的中文释义。**
 
-## 产品原则
+它不做整页翻译，不做学习平台，也不试图把网页变成控制台。目标一直很克制：**低打扰、低占用、越用越准。**
 
-- 干净
-- 低打扰
-- 低占用
-- 越用越准
+## Highlights
 
-## 技术栈
+- Predictive word underlines for English web pages
+- Hover or click to open a compact Chinese glossary card
+- `Alt + selection` and context-menu manual lookup
+- Known / unknown feedback loop that adjusts future annotation density
+- Local vocab list, known-word list, and lightweight settings page
+- Optional online fallback for words missing from the local dictionary
+
+## Screenshots
+
+| Reading view | Lookup tooltip |
+| --- | --- |
+| ![Reading view](./docs/screenshots/01-reading-view.png) | ![Lookup tooltip](./docs/screenshots/02-lookup-tooltip.png) |
+
+| Settings | Vocab list |
+| --- | --- |
+| ![Settings panel](./docs/screenshots/03-settings-panel.png) | ![Vocab list](./docs/screenshots/04-vocab-list.png) |
+
+## What It Does
+
+- Pre-annotates likely unknown English words in normal article text
+- Shows a small translation card with lemma, phonetic, and short Chinese meaning
+- Lets users mark a word as known with one click
+- Records weak positive feedback when annotated words are skipped
+- Supports manual lookup for missed words
+- Stores vocab progress locally in the browser
+- Exposes a minimal options page for level, trigger mode, underline tone, shortcut, vocab, and known words
+
+## Current Scope
+
+This repository currently targets the MVP:
+
+- Standard English web pages
+- Word-level prediction and lookup
+- Chrome / Edge first, Firefox compatibility reserved in architecture
+
+Not included yet:
+
+- Sentence translation
+- PDF support
+- YouTube subtitles
+- OCR
+- Cloud sync
+- Spaced repetition review
+
+## How It Works
+
+### Local-first lookup
+
+潜词优先使用本地词典与词频索引进行判断和查词，尽量保证响应快、打扰少。
+
+### Feedback-driven annotation
+
+用户的行为会逐步修正预判：
+
+- 手动查词代表系统漏判
+- 点击“认识”代表系统误判
+- 被标注但持续跳过代表弱正反馈
+
+这些反馈会改变未来的标注倾向，而不只是积累静态列表。
+
+### Online fallback
+
+当本地词典没有某个词时，用户可以手动触发联网查询。成功结果会被统一格式化后写回本地缓存和生词体系。
+
+## Tech Stack
 
 - TypeScript
 - Vite
@@ -32,7 +86,26 @@
 - Vitest
 - Playwright
 
-## 本地开发
+## Project Structure
+
+```text
+src/
+  background/    background worker and online lookup bridge
+  content/       page scanning, annotation, tooltip, manual lookup
+  core/          decision logic, profile model, messages, types
+  options/       settings page UI
+  storage/       browser storage adapters and stores
+  data/          generated local dictionary and rank indexes
+scripts/
+  build-dictionary.ts
+  smoke-extension.ts
+tests/
+  unit/
+docs/
+  screenshots/
+```
+
+## Local Development
 
 ```bash
 npm install
@@ -40,89 +113,67 @@ npm test
 npm run build
 ```
 
-构建产物在 `dist/`。
+Build output goes to `dist/`.
 
-## 导入扩展
+## Load the Extension
 
-Chrome / Edge：
+Chrome / Edge:
 
-1. 运行 `npm run build`
-2. 打开 `chrome://extensions` 或 `edge://extensions`
-3. 打开“开发者模式”
-4. 选择“加载已解压的扩展程序”
-5. 选择项目里的 `dist` 目录
+1. Run `npm run build`
+2. Open `chrome://extensions` or `edge://extensions`
+3. Enable developer mode
+4. Choose "Load unpacked"
+5. Select the `dist` directory
 
-## 使用方式
+## Usage
 
-- 标注词：
-  - 根据设置，悬停或点击查看释义
-- 漏判词：
-  - `Alt + 选中单词`
-  - 或右键菜单选择“翻译所选单词”
-- 误判词：
-  - 在卡片中点击“认识”
-- 设置页：
-  - 点击扩展图标打开
+- Predicted words:
+  - Hover or click, depending on your settings
+- Missed words:
+  - `Alt + select a word`
+  - or use the context menu item
+- Wrong predictions:
+  - click `认识` in the tooltip
+- Settings:
+  - click the extension icon
 
-## 数据与词典
+## Dictionary and Data Sources
 
-- 本地词典包基于 ECDICT 构建并精简
-- 运行时使用生成后的 `src/data/dictionary.generated.json` 与 `src/data/rank.generated.json`
-- 构建脚本在 `scripts/build-dictionary.ts`
+- The bundled local dictionary is built from ECDICT-derived source data
+- Runtime lookup uses generated files under `src/data/`
+- Online fallback currently uses:
+  - [FreeDictionaryAPI](https://freedictionaryapi.com/)
+  - [MyMemory Translation API](https://mymemory.translated.net/)
 
-## 联网补查
+## Privacy
 
-当本地词典里没有某个词时，用户可以手动触发联网查询。
+潜词尽量把数据留在本地：
 
-当前使用：
+- profile, vocab, known words, and cached online entries are stored locally
+- normal annotation and local lookup do not upload full page text
+- only user-triggered online lookup sends the minimum text needed to third-party services
 
-- [FreeDictionaryAPI](https://freedictionaryapi.com/)
-- [MyMemory Translation API](https://mymemory.translated.net/)
+See [PRIVACY.md](./PRIVACY.md) for details.
 
-联网补查是按需触发的，不会在普通浏览时自动批量上传页面内容。
-
-## 隐私
-
-潜词默认使用本地词典和本地存储。
-
-- 用户画像、生词、熟词、在线补查缓存都保存在浏览器本地
-- 正常标注和本地查词不需要把网页正文发送到服务器
-- 只有当用户主动点击“联网查询”时，才会把单个单词或单条英文释义发送给第三方服务
-
-更完整的说明见 [PRIVACY.md](./PRIVACY.md)。
-
-## 测试
+## Testing
 
 ```bash
 npm test
 ```
 
-当前测试覆盖：
+Current verification includes:
 
-- 单元测试
-- 构建验证
-- 基础 smoke test
+- typecheck
+- unit tests
+- build verification
+- browser smoke test
 
-## 当前范围
+## Roadmap Notes
 
-这个仓库当前聚焦在 MVP：
+The MVP is already usable, but there is still one obvious next optimization:
 
-- 普通英文网页
-- 单词级预判与查词
-
-还没有做：
-
-- 整句翻译
-- PDF
-- YouTube 字幕
-- OCR
-- 云同步
-- 完整复习系统
-
-## 路线提醒
-
-现在的核心体验已经可用，但包体仍偏大。后续一个很值得继续做的方向，是进一步压缩词典加载和内容脚本体积。
+- shrink dictionary loading and content-script bundle size further
 
 ## License
 
-MIT. 见 [LICENSE](./LICENSE)。
+MIT. See [LICENSE](./LICENSE).
