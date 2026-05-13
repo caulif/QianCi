@@ -1,4 +1,6 @@
 .superpowers/
+docs/superpowers/
+产品说明.md
 node_modules/
 dist/
 coverage/
