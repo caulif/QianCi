@@ -9,3 +9,94 @@
 body {
   margin: 0;
 }
+
+.options-shell {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.options-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 16px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #ebe7df;
+}
+
+.options-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+}
+
+.options-header p {
+  margin: 4px 0 0;
+  color: #777;
+  font-size: 13px;
+}
+
+.panel {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid #ece8df;
+  border-radius: 8px;
+  background: #fafaf8;
+}
+
+.panel-toolbar,
+.level-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-title {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.level-row {
+  margin-top: 16px;
+}
+
+.level-row input[type='range'] {
+  width: 100%;
+}
+
+.level-badge {
+  min-width: 86px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: #efede8;
+  color: #333;
+  text-align: center;
+  font-size: 13px;
+}
+
+.icon-button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #d8d3c9;
+  border-radius: 6px;
+  background: #fffefb;
+  color: #333;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.vocab-table {
+  width: 100%;
+  margin-top: 16px;
+  border-collapse: collapse;
+}
+
+.vocab-table th,
+.vocab-table td {
+  padding: 10px 0;
+  border-bottom: 1px solid #eee8df;
+  text-align: left;
+  font-size: 13px;
+}
