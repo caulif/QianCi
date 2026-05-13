@@ -1,29 +1,26 @@
 import { shouldAnnotateWord } from '../core/decision';
-import { applyKnownFeedback, applyLookupFeedback, applySkipFeedback } from '../core/profile';
-import type { UserProfile } from '../core/types';
+import type { DictionaryEntry } from '../core/dictionaryEntry';
+import { applyKnownFeedback, applyLookupFeedback, applySkipFeedback, underlineToneColor } from '../core/profile';
+import type { LookupFeedbackMode, LookupTrigger, ManualShortcut, UserProfile } from '../core/types';
 import { createAnnotatedFragment } from './annotator';
+import type { RectLike } from './placement';
 import { normalizeSelectedWord } from './selection';
 import { createTooltipController } from './tooltip';
 
-export interface DictionaryEntry {
-  word: string;
-  phonetic: string;
-  translation: string;
-  rank: number;
-}
-
-export type DictionaryIndex = Record<string, DictionaryEntry>;
-
 export interface ContentServices {
   profile: UserProfile;
-  dictionary: DictionaryIndex;
+  ranks: Record<string, number>;
+  resolveEntry(word: string): Promise<DictionaryEntry | undefined>;
+  lookupOnline(word: string): Promise<{ entry?: DictionaryEntry; message: string }>;
   onKnown(word: string, profile: UserProfile): void | Promise<void>;
-  onLookup(word: string, mode: 'hover' | 'alt', profile: UserProfile): void | Promise<void>;
+  onLookup(word: string, mode: LookupFeedbackMode, profile: UserProfile, entry?: DictionaryEntry): void | Promise<void>;
   onSkip(word: string, pageKey: string, profile: UserProfile): void | Promise<void>;
 }
 
 export interface ContentApp {
   rescan(): void;
+  updateProfile(profile: UserProfile): void;
+  lookupSelection(selectionText: string, source?: 'alt' | 'menu'): Promise<void>;
   dispose(): void;
 }
 
@@ -42,21 +39,23 @@ const SKIP_SELECTOR = [
   '[data-qianci-word]'
 ].join(',');
 
-function ensureStyles(doc: Document): void {
-  if (doc.querySelector('[data-qianci-style]')) {
-    return;
+const RESCAN_DELAY_MS = 24;
+
+function ensureStyles(doc: Document, underlineColor: string): void {
+  let style = doc.querySelector<HTMLStyleElement>('[data-qianci-style]');
+  if (!style) {
+    style = doc.createElement('style');
+    style.dataset.qianciStyle = 'true';
+    doc.head.append(style);
   }
 
-  const style = doc.createElement('style');
-  style.dataset.qianciStyle = 'true';
   style.textContent = `
     .qianci-word {
-      border-bottom: 1px dashed rgba(84, 84, 84, 0.48);
+      border-bottom: 1px dashed ${underlineColor};
       cursor: help;
       text-decoration: none;
     }
   `;
-  doc.head.append(style);
 }
 
 function shouldSkipTextNode(text: Text): boolean {
@@ -101,11 +100,45 @@ function removeAnnotationElement(element: HTMLElement): void {
   element.replaceWith(text);
 }
 
+function matchesManualShortcut(event: MouseEvent, shortcut: ManualShortcut): boolean {
+  switch (shortcut) {
+    case 'ctrl':
+      return event.ctrlKey;
+    case 'shift':
+      return event.shiftKey;
+    case 'meta':
+      return event.metaKey;
+    case 'alt':
+    default:
+      return event.altKey;
+  }
+}
+
+function selectionAnchor(doc: Document, fallback?: HTMLElement): HTMLElement | RectLike {
+  const selection = doc.getSelection();
+  if (selection?.rangeCount) {
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    if (rect.width || rect.height) {
+      return {
+        x: rect.left,
+        y: rect.top,
+        width: rect.width,
+        height: rect.height
+      };
+    }
+  }
+
+  return fallback ?? doc.body;
+}
+
 export function createContentApp(doc: Document, services: ContentServices): ContentApp {
   let disposed = false;
   let profile = services.profile;
   const tooltip = createTooltipController(doc);
   const skipTimers = new Set<number>();
+  const pendingRoots = new Set<ParentNode>();
+  let rescanTimer = 0;
+  let observer: MutationObserver | null = null;
 
   function pageKey(): string {
     return doc.location?.href || 'document';
@@ -117,15 +150,64 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     return rect.top <= view.innerHeight && rect.bottom >= 0;
   }
 
-  function knownAction(anchor: HTMLElement, word: string): () => void {
+  function knownAction(anchor: HTMLElement | RectLike, word: string): () => void {
     return () => {
       profile = applyKnownFeedback(profile, word, Date.now());
       void services.onKnown(word, profile);
       tooltip.hide();
-      if (anchor.dataset.qianciWord) {
+      if (anchor instanceof HTMLElement && anchor.dataset.qianciWord) {
         removeAnnotationElement(anchor);
       }
     };
+  }
+
+  async function showOnlineResult(
+    anchor: HTMLElement | RectLike,
+    word: string,
+    entry: DictionaryEntry,
+    mode: LookupFeedbackMode
+  ): Promise<void> {
+    profile = applyLookupFeedback(profile, word, mode, Date.now());
+    void services.onLookup(word, mode, profile, entry);
+    tooltip.showEntry(anchor, entry, knownAction(anchor, word));
+  }
+
+  async function lookupWord(anchor: HTMLElement | RectLike, word: string, mode: LookupFeedbackMode): Promise<void> {
+    try {
+      const entry = await services.resolveEntry(word);
+      if (disposed) {
+        return;
+      }
+
+      if (entry) {
+        profile = applyLookupFeedback(profile, word, mode, Date.now());
+        void services.onLookup(word, mode, profile, entry);
+        tooltip.showEntry(anchor, entry, knownAction(anchor, word));
+        return;
+      }
+
+      tooltip.showMissing(anchor, word, async () => {
+        try {
+          tooltip.showLoading(anchor, word);
+          const result = await services.lookupOnline(word);
+          if (!result.entry) {
+            tooltip.showMissing(anchor, word, async () => {
+              await lookupWord(anchor, word, mode);
+            }, result.message);
+            return;
+          }
+
+          await showOnlineResult(anchor, word, result.entry, mode);
+        } catch (error) {
+          console.error(error);
+          tooltip.showMissing(anchor, word, async () => {
+            await lookupWord(anchor, word, mode);
+          }, '联网查询失败');
+        }
+      }, '词库里没有');
+    } catch (error) {
+      console.error(error);
+    }
   }
 
   function bindWordElement(element: HTMLElement): void {
@@ -133,6 +215,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     if (!word) {
       return;
     }
+    let hoverRequestId = 0;
 
     let interacted = false;
     const timer = window.setTimeout(() => {
@@ -145,51 +228,72 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     skipTimers.add(timer);
 
     element.addEventListener('mouseenter', () => {
-      interacted = true;
-      const entry = services.dictionary[word];
-      if (!entry) {
+      if (profile.lookupTrigger !== 'hover') {
         return;
       }
-      profile = applyLookupFeedback(profile, word, 'hover', Date.now());
-      void services.onLookup(word, 'hover', profile);
-      tooltip.show(element, entry, knownAction(element, word));
+
+      interacted = true;
+      tooltip.cancelHide();
+      const requestId = hoverRequestId + 1;
+      hoverRequestId = requestId;
+
+      void (async () => {
+        try {
+          const entry = await services.resolveEntry(word);
+          if (!entry || hoverRequestId !== requestId || disposed || !element.isConnected) {
+            return;
+          }
+
+          profile = applyLookupFeedback(profile, word, 'hover', Date.now());
+          void services.onLookup(word, 'hover', profile, entry);
+          tooltip.showEntry(element, entry, knownAction(element, word));
+        } catch (error) {
+          console.error(error);
+        }
+      })();
     });
 
     element.addEventListener('mouseleave', () => {
-      tooltip.hide();
+      hoverRequestId += 1;
+      tooltip.scheduleHide();
+    });
+
+      element.addEventListener('click', () => {
+      if (profile.lookupTrigger !== 'click') {
+        return;
+      }
+
+      interacted = true;
+      tooltip.cancelHide();
+      void lookupWord(element, word, 'click');
     });
   }
 
-  function handleAltSelection(event: MouseEvent): void {
-    if (!event.altKey) {
-      return;
-    }
-
-    const selectedWord = normalizeSelectedWord(doc.getSelection()?.toString() ?? '');
+  async function lookupSelection(selectionText: string, source: 'alt' | 'menu' = 'alt'): Promise<void> {
+    const selectedWord = normalizeSelectedWord(selectionText);
     if (!selectedWord) {
       return;
     }
 
-    const entry = services.dictionary[selectedWord];
-    if (!entry) {
+    const anchor = selectionAnchor(doc);
+    await lookupWord(anchor, selectedWord, 'selection');
+  }
+
+  function handleManualSelection(event: MouseEvent): void {
+    if (!matchesManualShortcut(event, profile.manualShortcut)) {
       return;
     }
 
-    profile = applyLookupFeedback(profile, selectedWord, 'alt', Date.now());
-    void services.onLookup(selectedWord, 'alt', profile);
-
-    const target = event.target;
-    const anchor = target instanceof HTMLElement ? target : doc.body;
-    tooltip.show(anchor, entry, knownAction(anchor, selectedWord));
+    void lookupSelection(doc.getSelection()?.toString() ?? '', 'alt');
   }
 
   function annotateTextNode(textNode: Text): void {
     const fragment = createAnnotatedFragment(textNode.data, (token) => {
-      const entry = services.dictionary[token.normalized];
-      if (!entry) {
+      const rank = services.ranks[token.normalized];
+      if (!rank) {
         return false;
       }
-      return shouldAnnotateWord(profile, { word: token.normalized, rank: entry.rank });
+      return shouldAnnotateWord(profile, { word: token.normalized, rank });
     });
 
     const annotated = Array.from(fragment.querySelectorAll<HTMLElement>('[data-qianci-word]'));
@@ -203,7 +307,88 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     textNode.replaceWith(fragment);
   }
 
-  doc.addEventListener('mouseup', handleAltSelection);
+  function scanRoot(root: ParentNode): void {
+    for (const textNode of collectTextNodes(root)) {
+      annotateTextNode(textNode);
+    }
+  }
+
+  function observeBody(): void {
+    if (!observer || !doc.body) {
+      return;
+    }
+
+    observer.observe(doc.body, {
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
+  }
+
+  function scheduleScan(root: ParentNode = doc.body): void {
+    if (!root || disposed) {
+      return;
+    }
+
+    pendingRoots.add(root);
+    if (rescanTimer) {
+      return;
+    }
+
+    rescanTimer = window.setTimeout(() => {
+      rescanTimer = 0;
+      if (disposed) {
+        pendingRoots.clear();
+        return;
+      }
+
+      ensureStyles(doc, underlineToneColor(profile.underlineTone));
+      observer?.disconnect();
+      const roots = Array.from(pendingRoots);
+      pendingRoots.clear();
+      for (const pendingRoot of roots) {
+        const connectedRoot =
+          pendingRoot instanceof Node && 'isConnected' in pendingRoot ? pendingRoot.isConnected : true;
+        if (!connectedRoot) {
+          continue;
+        }
+        scanRoot(pendingRoot);
+      }
+      observeBody();
+    }, RESCAN_DELAY_MS);
+  }
+
+  doc.addEventListener('mouseup', handleManualSelection);
+  observer = new MutationObserver((mutations) => {
+    if (disposed) {
+      return;
+    }
+
+    for (const mutation of mutations) {
+      if (mutation.type === 'characterData') {
+        const parent = mutation.target.parentNode;
+        if (parent instanceof HTMLElement && !parent.closest(SKIP_SELECTOR)) {
+          scheduleScan(parent);
+        }
+        continue;
+      }
+
+      for (const node of Array.from(mutation.addedNodes)) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const parent = node.parentNode;
+          if (parent instanceof HTMLElement && !parent.closest(SKIP_SELECTOR)) {
+            scheduleScan(parent);
+          }
+          continue;
+        }
+
+        if (node instanceof HTMLElement && !node.closest(SKIP_SELECTOR)) {
+          scheduleScan(node);
+        }
+      }
+    }
+  });
+  observeBody();
 
   return {
     rescan() {
@@ -211,18 +396,32 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
         return;
       }
 
-      ensureStyles(doc);
-      for (const textNode of collectTextNodes(doc.body)) {
-        annotateTextNode(textNode);
-      }
+      ensureStyles(doc, underlineToneColor(profile.underlineTone));
+      observer?.disconnect();
+      scanRoot(doc.body);
+      observeBody();
+    },
+    updateProfile(nextProfile) {
+      profile = nextProfile;
+      ensureStyles(doc, underlineToneColor(profile.underlineTone));
+    },
+    async lookupSelection(selectionText, source = 'alt') {
+      await lookupSelection(selectionText, source);
     },
     dispose() {
       disposed = true;
-      doc.removeEventListener('mouseup', handleAltSelection);
+      doc.removeEventListener('mouseup', handleManualSelection);
       for (const timer of skipTimers) {
         window.clearTimeout(timer);
       }
       skipTimers.clear();
+      if (rescanTimer) {
+        window.clearTimeout(rescanTimer);
+        rescanTimer = 0;
+      }
+      pendingRoots.clear();
+      observer?.disconnect();
+      observer = null;
       tooltip.hide();
     }
   };

@@ -16,9 +16,22 @@ function findContentBundle(manifest: BuiltManifest): string {
   return contentBundle;
 }
 
+async function findServiceWorkerBundle(): Promise<string> {
+  const loader = readFile(resolve(process.cwd(), 'dist', 'service-worker-loader.js'), 'utf8');
+  const text = await loader;
+  const match = text.match(/assets\/[^"'`]+\.js/);
+  if (!match) {
+    throw new Error('Could not find built service worker bundle');
+  }
+  return match[0];
+}
+
 function contentType(pathname: string): string {
   if (extname(pathname) === '.js') {
     return 'text/javascript; charset=utf-8';
+  }
+  if (extname(pathname) === '.json') {
+    return 'application/json; charset=utf-8';
   }
   return 'text/plain; charset=utf-8';
 }
@@ -115,6 +128,15 @@ async function main(): Promise<void> {
     throw new Error('Built manifest is missing the extension name');
   }
   const contentBundle = findContentBundle(JSON.parse(manifestText) as BuiltManifest);
+  const serviceWorkerBundle = await findServiceWorkerBundle();
+  const serviceWorkerText = await readFile(resolve(distDir, serviceWorkerBundle), 'utf8');
+  const hasActionClickHandler =
+    serviceWorkerText.includes('chrome.action.onClicked') ||
+    serviceWorkerText.includes('.action.onClicked') ||
+    serviceWorkerText.includes('onClicked.addListener');
+  if (!hasActionClickHandler || !serviceWorkerText.includes('openOptionsPage')) {
+    throw new Error('Built service worker does not register the options-page click handler');
+  }
 
   const { url, close } = await startServer(distDir, contentBundle);
 

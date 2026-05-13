@@ -7,6 +7,14 @@ import {
 } from '../../src/core/profile';
 
 describe('profile feedback', () => {
+  it('creates a profile with default interaction settings', () => {
+    const profile = createProfile('cet4');
+
+    expect(profile.underlineTone).toBe('graphite');
+    expect(profile.lookupTrigger).toBe('hover');
+    expect(profile.manualShortcut).toBe('alt');
+  });
+
   it('raises the level score when the user marks a word as known', () => {
     const base = createProfile('cet4');
     const updated = applyKnownFeedback(base, 'apple', 100);
@@ -16,14 +24,23 @@ describe('profile feedback', () => {
     expect(updated.words.apple?.isUnknown).toBe(false);
   });
 
-  it('lowers the level score more for Alt lookup than hover lookup', () => {
+  it('lowers the level score more for manual lookup than hover lookup', () => {
     const base = createProfile('cet6');
     const afterHover = applyLookupFeedback(base, 'abrupt', 'hover', 200);
-    const afterAlt = applyLookupFeedback(base, 'serendipity', 'alt', 300);
+    const afterAlt = applyLookupFeedback(base, 'serendipity', 'selection', 300);
 
     expect(afterHover.levelScore).toBeLessThan(base.levelScore);
     expect(afterAlt.levelScore).toBeLessThan(afterHover.levelScore);
     expect(afterAlt.words.serendipity?.isUnknown).toBe(true);
+  });
+
+  it('keeps known words known when they are looked up again', () => {
+    const known = applyKnownFeedback(createProfile('cet4'), 'abrupt', 100);
+    const lookedUp = applyLookupFeedback(known, 'abrupt', 'selection', 200);
+
+    expect(lookedUp.words.abrupt?.isKnown).toBe(true);
+    expect(lookedUp.words.abrupt?.isUnknown).toBe(false);
+    expect(lookedUp.levelScore).toBe(known.levelScore);
   });
 
   it('counts skipped annotated words as weak familiarity only once per page', () => {

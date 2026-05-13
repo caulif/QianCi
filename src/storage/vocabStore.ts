@@ -34,3 +34,7 @@ export function upsertVocabItem(vocab: VocabItem[], next: VocabItem): VocabItem[
     ...vocab.filter((item) => item.word !== next.word)
   ];
 }
+
+export function removeVocabItem(vocab: VocabItem[], word: string): VocabItem[] {
+  return vocab.filter((item) => item.word !== word);
+}

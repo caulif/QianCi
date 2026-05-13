@@ -4,5 +4,7 @@ dist/
 coverage/
 test-results/
 playwright-report/
+.cache/
+.playwright-profile/
 .env
 .env.*

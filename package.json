@@ -2,9 +2,21 @@
   "name": "qianci",
   "version": "0.1.0",
   "private": true,
+  "description": "A minimal browser extension for predictive English word lookup while reading.",
+  "license": "MIT",
+  "author": "caulif",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caulif/QianCi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/caulif/QianCi/issues"
+  },
+  "homepage": "https://github.com/caulif/QianCi#readme",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "npm run build:data",
     "build": "vite build",
     "build:data": "tsx scripts/build-dictionary.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",

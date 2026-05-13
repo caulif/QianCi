@@ -26,12 +26,13 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function canFitX(x: number, cardWidth: number, viewportWidth: number): boolean {
-  return x >= EDGE_MARGIN && x + cardWidth <= viewportWidth - EDGE_MARGIN;
+function clampToViewportY(y: number, cardHeight: number, viewportHeight: number): number {
+  const maxY = Math.max(EDGE_MARGIN, viewportHeight - cardHeight - EDGE_MARGIN);
+  return clamp(y, EDGE_MARGIN, maxY);
 }
 
-function canFitY(y: number, cardHeight: number, viewportHeight: number): boolean {
-  return y >= EDGE_MARGIN && y + cardHeight <= viewportHeight - EDGE_MARGIN;
+function canFitX(x: number, cardWidth: number, viewportWidth: number): boolean {
+  return x >= EDGE_MARGIN && x + cardWidth <= viewportWidth - EDGE_MARGIN;
 }
 
 export function chooseTooltipPlacement(anchor: RectLike, viewport: SizeLike, card: SizeLike): TooltipPlacement {
@@ -39,30 +40,31 @@ export function chooseTooltipPlacement(anchor: RectLike, viewport: SizeLike, car
   const leftX = anchor.x - card.width - HORIZONTAL_GAP;
   const highY = anchor.y - card.height - HIGH_LIFT;
   const belowY = anchor.y + anchor.height + HORIZONTAL_GAP;
+  const aboveY = clampToViewportY(highY, card.height, viewport.height);
 
-  if (canFitX(rightX, card.width, viewport.width) && canFitY(highY, card.height, viewport.height)) {
+  if (canFitX(rightX, card.width, viewport.width)) {
     return {
       x: rightX,
-      y: highY,
+      y: aboveY,
       side: 'right',
       vertical: 'above',
-      verticalOffset: highY - anchor.y
+      verticalOffset: aboveY - anchor.y
     };
   }
 
-  if (canFitX(leftX, card.width, viewport.width) && canFitY(highY, card.height, viewport.height)) {
+  if (canFitX(leftX, card.width, viewport.width)) {
     return {
       x: leftX,
-      y: highY,
+      y: aboveY,
       side: 'left',
       vertical: 'above',
-      verticalOffset: highY - anchor.y
+      verticalOffset: aboveY - anchor.y
     };
   }
 
   const preferredX = canFitX(rightX, card.width, viewport.width) ? rightX : leftX;
   const clampedX = clamp(preferredX, EDGE_MARGIN, viewport.width - card.width - EDGE_MARGIN);
-  const clampedY = clamp(belowY, EDGE_MARGIN, viewport.height - card.height - EDGE_MARGIN);
+  const clampedY = clampToViewportY(belowY, card.height, viewport.height);
 
   return {
     x: clampedX,

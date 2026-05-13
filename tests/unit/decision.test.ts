@@ -25,4 +25,12 @@ describe('annotation decision', () => {
     expect(shouldAnnotateWord(skippedTwice, { word: 'abrupt', rank: 2000 })).toBe(true);
     expect(shouldAnnotateWord(skippedThreeTimes, { word: 'abrupt', rank: 2000 })).toBe(false);
   });
+
+  it('uses level score to make the same level more or less aggressive', () => {
+    const lower = createProfile('cet4');
+    const higher = { ...createProfile('cet4'), levelScore: 4.2 };
+
+    expect(shouldAnnotateWord(lower, { word: 'nuance', rank: 9_000 })).toBe(true);
+    expect(shouldAnnotateWord(higher, { word: 'nuance', rank: 9_000 })).toBe(false);
+  });
 });

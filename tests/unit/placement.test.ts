@@ -25,14 +25,26 @@ describe('tooltip placement', () => {
     expect(placement.x).toBeLessThan(1160);
   });
 
-  it('falls below the word when there is not enough space above', () => {
+  it('falls below the word when neither side can keep the card beside the word', () => {
     const placement = chooseTooltipPlacement(
-      { x: 240, y: 18, width: 64, height: 20 },
-      { width: 1280, height: 900 },
+      { x: 100, y: 18, width: 64, height: 20 },
+      { width: 260, height: 900 },
       { width: 180, height: 88 }
     );
 
     expect(placement.vertical).toBe('below');
     expect(placement.y).toBeGreaterThan(18);
+  });
+
+  it('keeps the tooltip above the word near the top edge when the right side fits', () => {
+    const placement = chooseTooltipPlacement(
+      { x: 240, y: 40, width: 64, height: 20 },
+      { width: 1280, height: 900 },
+      { width: 180, height: 88 }
+    );
+
+    expect(placement.side).toBe('right');
+    expect(placement.vertical).toBe('above');
+    expect(placement.y).toBeLessThan(40);
   });
 });

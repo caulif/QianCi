@@ -5,10 +5,10 @@ const manifest: ManifestV3Export = {
   name: '潜词',
   version: '0.1.0',
   description: '极简英文网页单词预判与查词扩展',
-  permissions: ['storage'],
+  permissions: ['storage', 'contextMenus', 'tabs'],
   host_permissions: ['http://*/*', 'https://*/*'],
   background: {
-    service_worker: 'src/background/index.ts',
+    service_worker: 'src/background/worker.ts',
     type: 'module'
   },
   action: {

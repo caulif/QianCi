@@ -1,19 +1,30 @@
 import './styles.css';
-import type { UserLevel } from '../core/types';
+import { createProfile, LOOKUP_TRIGGERS, MANUAL_SHORTCUTS, UNDERLINE_TONES } from '../core/profile';
+import type { LookupTrigger, ManualShortcut, UnderlineTone, UserLevel } from '../core/types';
 import type { VocabItem } from '../storage/vocabStore';
 import { createChromeStorageAdapter, createMemoryStore, type KeyValueStore } from '../storage/browserAdapter';
 import { loadProfile, saveProfile } from '../storage/profileStore';
-import { loadVocab } from '../storage/vocabStore';
+import { loadVocab, removeVocabItem, saveVocab } from '../storage/vocabStore';
 
 export interface OptionsState {
   level: UserLevel;
+  underlineTone: UnderlineTone;
+  lookupTrigger: LookupTrigger;
+  manualShortcut: ManualShortcut;
   vocab: VocabItem[];
+  knownWords: Array<{ word: string; lastSeenAt: number }>;
+  searchQuery?: string;
 }
 
 interface OptionsHandlers {
   onLevelChange?: (level: UserLevel) => void | Promise<void>;
+  onToneChange?: (tone: UnderlineTone) => void | Promise<void>;
+  onLookupTriggerChange?: (trigger: LookupTrigger) => void | Promise<void>;
+  onManualShortcutChange?: (shortcut: ManualShortcut) => void | Promise<void>;
+  onSearchChange?: (query: string) => void | Promise<void>;
+  onRemoveVocab?: (word: string) => void | Promise<void>;
+  onForgetKnown?: (word: string) => void | Promise<void>;
   onExport?: (csv: string) => void | Promise<void>;
-  onForgetWord?: (word: string) => void | Promise<void>;
 }
 
 const LEVELS: Array<{ level: UserLevel; label: string }> = [
@@ -66,6 +77,11 @@ function downloadCsv(csv: string): void {
 
 export function renderOptions(root: HTMLElement, state: OptionsState, handlers: OptionsHandlers = {}): void {
   root.innerHTML = '';
+  const searchQuery = state.searchQuery?.trim().toLowerCase() ?? '';
+  const matchesQuery = (word: string, translation = '') =>
+    !searchQuery || `${word} ${translation}`.toLowerCase().includes(searchQuery);
+  const filteredVocab = state.vocab.filter((item) => matchesQuery(item.word, item.translation));
+  const filteredKnownWords = state.knownWords.filter((item) => matchesQuery(item.word));
 
   const shell = document.createElement('section');
   shell.className = 'options-shell';
@@ -79,6 +95,25 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
     </div>
   `;
   shell.append(header);
+
+  const searchPanel = document.createElement('section');
+  searchPanel.className = 'panel';
+  const searchTitle = document.createElement('div');
+  searchTitle.className = 'panel-title';
+  searchTitle.textContent = '词表检索';
+  searchPanel.append(searchTitle);
+
+  const searchInput = document.createElement('input');
+  searchInput.type = 'search';
+  searchInput.className = 'search-input';
+  searchInput.placeholder = '搜单词或释义';
+  searchInput.value = state.searchQuery ?? '';
+  searchInput.setAttribute('aria-label', '搜索词表');
+  searchInput.addEventListener('input', () => {
+    void handlers.onSearchChange?.(searchInput.value);
+  });
+  searchPanel.append(searchInput);
+  shell.append(searchPanel);
 
   const levelPanel = document.createElement('section');
   levelPanel.className = 'panel';
@@ -111,6 +146,100 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   levelPanel.append(levelRow);
   shell.append(levelPanel);
 
+  const triggerPanel = document.createElement('section');
+  triggerPanel.className = 'panel';
+  const triggerTitle = document.createElement('div');
+  triggerTitle.className = 'panel-title';
+  triggerTitle.textContent = '触发方式';
+  triggerPanel.append(triggerTitle);
+
+  const triggerRow = document.createElement('div');
+  triggerRow.className = 'choice-row';
+
+  for (const item of LOOKUP_TRIGGERS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'choice-button';
+    button.dataset.qianciLookupTrigger = item.trigger;
+    button.textContent = item.label;
+    button.setAttribute('aria-pressed', String(state.lookupTrigger === item.trigger));
+    button.addEventListener('click', () => {
+      void handlers.onLookupTriggerChange?.(item.trigger);
+    });
+    triggerRow.append(button);
+  }
+
+  triggerPanel.append(triggerRow);
+  shell.append(triggerPanel);
+
+  const tonePanel = document.createElement('section');
+  tonePanel.className = 'panel';
+  const toneTitle = document.createElement('div');
+  toneTitle.className = 'panel-title';
+  toneTitle.textContent = '划线颜色';
+  tonePanel.append(toneTitle);
+
+  const toneRow = document.createElement('div');
+  toneRow.className = 'tone-row';
+
+  for (const tone of UNDERLINE_TONES) {
+    const toneButton = document.createElement('button');
+    toneButton.type = 'button';
+    toneButton.className = 'tone-button';
+    toneButton.dataset.qianciTone = tone.tone;
+    toneButton.title = tone.label;
+    toneButton.setAttribute('aria-label', tone.label);
+    toneButton.setAttribute('aria-pressed', String(state.underlineTone === tone.tone));
+    if (state.underlineTone === tone.tone) {
+      toneButton.dataset.selected = 'true';
+    }
+
+    const swatch = document.createElement('span');
+    swatch.className = 'tone-swatch';
+    swatch.style.background = tone.color;
+    toneButton.append(swatch);
+
+    const label = document.createElement('span');
+    label.className = 'tone-label';
+    label.textContent = tone.label;
+    toneButton.append(label);
+
+    toneButton.addEventListener('click', () => {
+      void handlers.onToneChange?.(tone.tone);
+    });
+
+    toneRow.append(toneButton);
+  }
+
+  tonePanel.append(toneRow);
+  shell.append(tonePanel);
+
+  const manualPanel = document.createElement('section');
+  manualPanel.className = 'panel';
+  const manualTitle = document.createElement('div');
+  manualTitle.className = 'panel-title';
+  manualTitle.textContent = '手动查词快捷键';
+  manualPanel.append(manualTitle);
+
+  const shortcutRow = document.createElement('div');
+  shortcutRow.className = 'choice-row';
+
+  for (const item of MANUAL_SHORTCUTS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'choice-button';
+    button.dataset.qianciManualShortcut = item.key;
+    button.textContent = item.label;
+    button.setAttribute('aria-pressed', String(state.manualShortcut === item.key));
+    button.addEventListener('click', () => {
+      void handlers.onManualShortcutChange?.(item.key);
+    });
+    shortcutRow.append(button);
+  }
+
+  manualPanel.append(shortcutRow);
+  shell.append(manualPanel);
+
   const vocabPanel = document.createElement('section');
   vocabPanel.className = 'panel';
   const vocabHeader = document.createElement('div');
@@ -141,22 +270,83 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   table.className = 'vocab-table';
   table.innerHTML = `
     <thead>
-      <tr><th>Word</th><th>Meaning</th><th>Seen</th></tr>
+      <tr><th>Word</th><th>Meaning</th><th>Seen</th><th></th></tr>
     </thead>
   `;
   const body = document.createElement('tbody');
-  for (const item of state.vocab) {
+  if (filteredVocab.length) {
+    for (const item of filteredVocab) {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td><strong>${item.word}</strong></td>
+        <td>${item.translation}</td>
+        <td>${new Date(item.lastSeenAt).toLocaleDateString()}</td>
+        <td class="row-actions"></td>
+      `;
+      const actions = row.querySelector('.row-actions');
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.className = 'row-action-button';
+      removeButton.dataset.qianciRemoveVocab = item.word;
+      removeButton.textContent = '移除';
+      removeButton.addEventListener('click', () => {
+        void handlers.onRemoveVocab?.(item.word);
+      });
+      actions?.append(removeButton);
+      body.append(row);
+    }
+  } else {
     const row = document.createElement('tr');
-    row.innerHTML = `
-      <td><strong>${item.word}</strong></td>
-      <td>${item.translation}</td>
-      <td>${new Date(item.lastSeenAt).toLocaleDateString()}</td>
-    `;
+    row.innerHTML = '<td colspan="4" class="empty-state">还没有生词</td>';
     body.append(row);
   }
   table.append(body);
   vocabPanel.append(table);
   shell.append(vocabPanel);
+
+  const knownPanel = document.createElement('section');
+  knownPanel.className = 'panel';
+  const knownTitle = document.createElement('div');
+  knownTitle.className = 'panel-title';
+  knownTitle.textContent = '熟词';
+  knownPanel.append(knownTitle);
+
+  const knownTable = document.createElement('table');
+  knownTable.className = 'vocab-table';
+  knownTable.innerHTML = `
+    <thead>
+      <tr><th>Word</th><th>Last seen</th><th></th></tr>
+    </thead>
+  `;
+  const knownBody = document.createElement('tbody');
+  if (filteredKnownWords.length) {
+    for (const item of filteredKnownWords) {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td><strong>${item.word}</strong></td>
+        <td>${new Date(item.lastSeenAt).toLocaleDateString()}</td>
+        <td class="row-actions"></td>
+      `;
+      const actions = row.querySelector('.row-actions');
+      const forgetButton = document.createElement('button');
+      forgetButton.type = 'button';
+      forgetButton.className = 'row-action-button';
+      forgetButton.dataset.qianciForgetKnown = item.word;
+      forgetButton.textContent = '移出';
+      forgetButton.addEventListener('click', () => {
+        void handlers.onForgetKnown?.(item.word);
+      });
+      actions?.append(forgetButton);
+      knownBody.append(row);
+    }
+  } else {
+    const row = document.createElement('tr');
+    row.innerHTML = '<td colspan="3" class="empty-state">还没有熟词</td>';
+    knownBody.append(row);
+  }
+  knownTable.append(knownBody);
+  knownPanel.append(knownTable);
+  shell.append(knownPanel);
 
   root.append(shell);
 }
@@ -169,20 +359,87 @@ function createDefaultStore(): KeyValueStore {
 }
 
 export async function mountOptionsApp(root: HTMLElement, store = createDefaultStore()): Promise<void> {
-  const profile = (await loadProfile(store)) ?? { level: 'cet4', levelScore: 2.6, words: {} };
-  const vocab = await loadVocab(store);
+  let profile = (await loadProfile(store)) ?? createProfile('cet4');
+  let vocab = await loadVocab(store);
+  let searchQuery = '';
 
-  renderOptions(root, {
-    level: profile.level,
-    vocab
-  }, {
-    onLevelChange: async (level) => {
-      await saveProfile(store, { ...profile, level });
-    },
-    onExport: async (csv) => {
-      downloadCsv(csv);
-    }
-  });
+  const knownWords = () =>
+    Object.entries(profile.words)
+      .filter(([, state]) => state.isKnown)
+      .sort((a, b) => b[1].lastSeenAt - a[1].lastSeenAt)
+      .map(([word, state]) => ({ word, lastSeenAt: state.lastSeenAt }));
+
+  const render = (): void => {
+    renderOptions(
+      root,
+      {
+        level: profile.level,
+        underlineTone: profile.underlineTone,
+        lookupTrigger: profile.lookupTrigger,
+        manualShortcut: profile.manualShortcut,
+        vocab,
+        knownWords: knownWords(),
+        searchQuery
+      },
+      {
+        onLevelChange: async (level) => {
+          profile = { ...profile, level };
+          await saveProfile(store, profile);
+          render();
+        },
+        onToneChange: async (tone) => {
+          profile = { ...profile, underlineTone: tone };
+          await saveProfile(store, profile);
+          render();
+        },
+        onLookupTriggerChange: async (trigger) => {
+          profile = { ...profile, lookupTrigger: trigger };
+          await saveProfile(store, profile);
+          render();
+        },
+        onManualShortcutChange: async (shortcut) => {
+          profile = { ...profile, manualShortcut: shortcut };
+          await saveProfile(store, profile);
+          render();
+        },
+        onSearchChange: async (query) => {
+          searchQuery = query;
+          render();
+        },
+        onRemoveVocab: async (word) => {
+          vocab = removeVocabItem(vocab, word);
+          render();
+          await saveVocab(store, vocab);
+        },
+        onForgetKnown: async (word) => {
+          const state = profile.words[word];
+          if (!state) {
+            return;
+          }
+
+          profile = {
+            ...profile,
+            words: {
+              ...profile.words,
+              [word]: {
+                ...state,
+                familiarity: 0,
+                isKnown: false,
+                isUnknown: false
+              }
+            }
+          };
+          render();
+          await saveProfile(store, profile);
+        },
+        onExport: async (csv) => {
+          downloadCsv(csv);
+        }
+      }
+    );
+  };
+
+  render();
 }
 
 const app = document.querySelector<HTMLElement>('#app');
