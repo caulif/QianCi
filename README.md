@@ -121,11 +121,28 @@ npm run build
 
 Chrome / Edge：
 
+### 方式一：直接使用 Release 安装包
+
+1. 在 Releases 页面下载扩展安装包
+2. 解压后，进入包含 `manifest.json` 的目录
+3. 打开 `chrome://extensions` 或 `edge://extensions`
+4. 打开开发者模式
+5. 选择“加载已解压的扩展程序”
+6. 选择刚才解压出来的目录
+
+### 方式二：本地构建
+
 1. 运行 `npm run build`
 2. 打开 `chrome://extensions` 或 `edge://extensions`
 3. 打开开发者模式
 4. 选择“加载已解压的扩展程序”
 5. 选择项目里的 `dist` 目录
+
+### 注意
+
+不要直接加载 GitHub 自动生成的 `Source code (zip)` 或源码仓库根目录。
+
+那个压缩包是项目源码，不是可直接导入浏览器的构建产物；Chrome 需要的是包含 `manifest.json` 的构建目录。
 
 ## 如何使用
 

@@ -6,5 +6,6 @@ test-results/
 playwright-report/
 .cache/
 .playwright-profile/
+.release/
 .env
 .env.*
