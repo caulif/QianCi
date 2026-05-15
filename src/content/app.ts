@@ -40,6 +40,7 @@ const SKIP_SELECTOR = [
 ].join(',');
 
 const RESCAN_DELAY_MS = 24;
+const SKIP_FEEDBACK_DELAY_MS = 3500;
 
 function ensureStyles(doc: Document, underlineColor: string): void {
   let style = doc.querySelector<HTMLStyleElement>('[data-qianci-style]');
@@ -135,9 +136,11 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
   let disposed = false;
   let profile = services.profile;
   const tooltip = createTooltipController(doc);
-  const skipTimers = new Set<number>();
+  const skipCandidates = new Map<HTMLElement, { word: string; observedAt: number; pageKey: string }>();
+  const interactedWords = new WeakSet<HTMLElement>();
   const pendingRoots = new Set<ParentNode>();
   let rescanTimer = 0;
+  let skipFeedbackTimer = 0;
   let observer: MutationObserver | null = null;
 
   function pageKey(): string {
@@ -159,6 +162,51 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
         removeAnnotationElement(anchor);
       }
     };
+  }
+
+  function clearSkipCandidate(element: HTMLElement): void {
+    interactedWords.add(element);
+    skipCandidates.delete(element);
+  }
+
+  function flushSkipFeedback(): void {
+    skipFeedbackTimer = 0;
+    if (disposed) {
+      skipCandidates.clear();
+      return;
+    }
+
+    const now = Date.now();
+    let nextDelay = Number.POSITIVE_INFINITY;
+    for (const [element, candidate] of Array.from(skipCandidates)) {
+      if (!element.isConnected || interactedWords.has(element)) {
+        skipCandidates.delete(element);
+        continue;
+      }
+
+      const elapsed = now - candidate.observedAt;
+      if (elapsed < SKIP_FEEDBACK_DELAY_MS) {
+        nextDelay = Math.min(nextDelay, SKIP_FEEDBACK_DELAY_MS - elapsed);
+        continue;
+      }
+
+      skipCandidates.delete(element);
+      if (isElementVisible(element)) {
+        profile = applySkipFeedback(profile, candidate.word, candidate.pageKey, now);
+        void services.onSkip(candidate.word, candidate.pageKey, profile);
+      }
+    }
+
+    if (Number.isFinite(nextDelay)) {
+      skipFeedbackTimer = window.setTimeout(flushSkipFeedback, nextDelay);
+    }
+  }
+
+  function scheduleSkipFeedback(element: HTMLElement, word: string): void {
+    skipCandidates.set(element, { word, observedAt: Date.now(), pageKey: pageKey() });
+    if (!skipFeedbackTimer) {
+      skipFeedbackTimer = window.setTimeout(flushSkipFeedback, SKIP_FEEDBACK_DELAY_MS);
+    }
   }
 
   async function showOnlineResult(
@@ -217,22 +265,14 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     }
     let hoverRequestId = 0;
 
-    let interacted = false;
-    const timer = window.setTimeout(() => {
-      skipTimers.delete(timer);
-      if (!disposed && !interacted && element.isConnected && isElementVisible(element)) {
-        profile = applySkipFeedback(profile, word, pageKey(), Date.now());
-        void services.onSkip(word, pageKey(), profile);
-      }
-    }, 3500);
-    skipTimers.add(timer);
+    scheduleSkipFeedback(element, word);
 
     element.addEventListener('mouseenter', () => {
       if (profile.lookupTrigger !== 'hover') {
         return;
       }
 
-      interacted = true;
+      clearSkipCandidate(element);
       tooltip.cancelHide();
       const requestId = hoverRequestId + 1;
       hoverRequestId = requestId;
@@ -263,7 +303,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
         return;
       }
 
-      interacted = true;
+      clearSkipCandidate(element);
       tooltip.cancelHide();
       void lookupWord(element, word, 'click');
     });
@@ -411,10 +451,11 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     dispose() {
       disposed = true;
       doc.removeEventListener('mouseup', handleManualSelection);
-      for (const timer of skipTimers) {
-        window.clearTimeout(timer);
+      skipCandidates.clear();
+      if (skipFeedbackTimer) {
+        window.clearTimeout(skipFeedbackTimer);
+        skipFeedbackTimer = 0;
       }
-      skipTimers.clear();
       if (rescanTimer) {
         window.clearTimeout(rescanTimer);
         rescanTimer = 0;

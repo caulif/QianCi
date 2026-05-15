@@ -316,4 +316,27 @@ describe('content app', () => {
     expect(extra.querySelector('[data-qianci-word="unobtrusive"]')).not.toBeNull();
     app.dispose();
   });
+
+  it('uses a shared skip-feedback timer instead of one timer per annotated word', () => {
+    vi.useFakeTimers();
+    const phrases = Array.from({ length: 120 }, () => 'The unobtrusive tool was meticulous.');
+    document.body.innerHTML = `<article><p>${phrases.join(' ')}</p></article>`;
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      ranks: { unobtrusive: 8100, meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: createOnlineLookup(),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+
+    app.rescan();
+
+    expect(document.querySelectorAll('[data-qianci-word]').length).toBeGreaterThan(100);
+    expect(setTimeoutSpy.mock.calls.length).toBeLessThan(10);
+    app.dispose();
+  });
 });
