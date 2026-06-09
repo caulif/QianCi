@@ -176,19 +176,64 @@ function defaultSmokeHtml(contentBundle: string): string {
 function compatibilitySmokeHtml(contentBundle: string): string {
   return `<!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>QianCi Compatibility Smoke</title></head>
+  <head>
+    <meta charset="utf-8">
+    <title>QianCi Compatibility Smoke</title>
+    <style>
+      body { margin: 0; padding-top: 80px; }
+      .css-invisible { visibility: hidden; }
+      .css-transparent { opacity: 0; }
+      .css-content-hidden { content-visibility: hidden; }
+      [data-selector-hidden] { display: none; }
+      .measurement-row { height: 0; overflow: hidden; }
+      .fixed-smoke-header {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 72px;
+        z-index: 1000000;
+        background: white;
+      }
+      .near-fixed-header-word { margin-top: 84px; }
+      .css-offscreen { position: absolute; left: -9999px; }
+      .css-clipped {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+      }
+    </style>
+  </head>
   <body>
     <script>window.anchorClicks = 0;</script>
     ${chromeApiStubScript(`{ 'qianci.profile': ${CLICK_PROFILE_SCRIPT} }`)}
+    <header id="fixed-smoke-header" class="fixed-smoke-header">Fixed smoke header</header>
+    <nav id="site-nav">The meticulous site navigation should stay untouched.</nav>
+    <div id="breadcrumb" role="navigation">The meticulous breadcrumb should stay untouched.</div>
     <article>
       <a id="nav" href="/next" onclick="window.anchorClicks += 1">Read the unobtrusive guide</a>
-      <p>The meticulous article remains readable.</p>
+      <p class="near-fixed-header-word">The meticulous header-adjacent word remains readable.</p>
+      <p id="main-article-paragraph">The meticulous article remains readable.</p>
       <section class="qianci-ignore">The meticulous sidebar should stay untouched.</section>
       <aside data-qianci-ignore="true">The meticulous widget should stay untouched.</aside>
+      <section id="polite-live" aria-live="polite">The meticulous live update should stay untouched.</section>
+      <section id="status-toast" role="status">The meticulous status toast should stay untouched.</section>
+      <section id="alert-toast" role="alert">The meticulous alert toast should stay untouched.</section>
       <section id="dynamic-ignore">The meticulous promo starts as readable.</section>
       <section id="style-hidden" style="display: none">The meticulous hidden style panel is collapsed.</section>
       <section id="style-restore" style="display: none">The meticulous restored style panel appears later.</section>
       <section id="class-hidden" class="d-none">The meticulous class hidden panel appears later.</section>
+      <span id="bootstrap-a11y" class="visually-hidden">The meticulous bootstrap a11y label is assistive only.</span>
+      <span id="tailwind-a11y" class="sr-only">The meticulous tailwind a11y label is assistive only.</span>
+      <section id="css-invisible" class="css-invisible">The meticulous css invisible panel appears later.</section>
+      <section id="css-transparent" class="css-transparent">The meticulous css transparent panel appears later.</section>
+      <section id="css-content-hidden" class="css-content-hidden">The meticulous css content hidden panel appears later.</section>
+      <section id="css-selector-hidden" data-selector-hidden>The meticulous selector hidden panel appears later.</section>
+      <section id="measurement-row" class="measurement-row">The meticulous measurement row appears later.</section>
+      <section id="css-offscreen" class="css-offscreen">The meticulous css offscreen panel appears later.</section>
+      <section id="css-clipped" class="css-clipped">The meticulous css clipped panel appears later.</section>
       <details id="details-panel">
         <summary>Open meticulous details</summary>
         <p>The meticulous details body appears later.</p>
@@ -202,6 +247,15 @@ function compatibilitySmokeHtml(contentBundle: string): string {
       </section>
       <section id="bootstrap-panel" class="collapse">
         <p>The meticulous bootstrap body appears later.</p>
+      </section>
+      <section id="dropdown-menu" class="dropdown-menu">
+        <p>The meticulous dropdown item appears later.</p>
+      </section>
+      <section id="native-popover" popover>
+        <p>The meticulous native popover body appears later.</p>
+      </section>
+      <section id="stateful-popover" role="dialog" data-state="closed" data-side="bottom">
+        <p>The meticulous stateful popover body appears later.</p>
       </section>
       <div role="tablist">
         <button id="active-tab-button" role="tab" aria-selected="true" aria-controls="active-tab-panel">Active tab</button>
@@ -223,6 +277,15 @@ function compatibilitySmokeHtml(contentBundle: string): string {
         <p>The meticulous fade bootstrap tab appears after transition.</p>
       </section>
       <qianci-shadow-reader id="shadow-host"></qianci-shadow-reader>
+      <late-shadow-reader id="late-shadow-host"></late-shadow-reader>
+      <slot-reader id="slot-host">
+        <p slot="body">The meticulous assigned slot body is visible.</p>
+      </slot-reader>
+      <fallback-slot-reader id="fallback-slot-host"></fallback-slot-reader>
+      <dynamic-slot-reader id="dynamic-slot-host"></dynamic-slot-reader>
+      <no-slot-reader id="no-slot-host">
+        <p>The meticulous unassigned light body is not rendered.</p>
+      </no-slot-reader>
       <iframe id="embedded-copy" srcdoc="<p>The meticulous iframe copy is isolated.</p>"></iframe>
       <div id="virtual-row"><p>The unobtrusive virtual row is visible.</p></div>
       <p id="disappearing-row">The ubiquitous disappearing row may unload.</p>
@@ -236,9 +299,22 @@ function compatibilitySmokeHtml(contentBundle: string): string {
       <p aria-hidden="true">The meticulous decoration is invisible.</p>
       <svg><text>The meticulous svg label is graphical.</text></svg>
     </article>
+    <footer id="page-footer">The meticulous page footer should stay untouched.</footer>
+    <div id="page-contentinfo" role="contentinfo">The meticulous content info should stay untouched.</div>
     <script>
       const shadowHost = document.querySelector('#shadow-host');
       shadowHost.attachShadow({ mode: 'open' }).innerHTML = '<p>The meticulous shadow text appears.</p>';
+      const slotHost = document.querySelector('#slot-host');
+      slotHost.attachShadow({ mode: 'open' }).innerHTML =
+        '<section><slot name="body">The meticulous fallback slot body is hidden.</slot></section>';
+      const fallbackSlotHost = document.querySelector('#fallback-slot-host');
+      fallbackSlotHost.attachShadow({ mode: 'open' }).innerHTML =
+        '<section><slot name="body">The meticulous fallback slot body is visible.</slot></section>';
+      const dynamicSlotHost = document.querySelector('#dynamic-slot-host');
+      dynamicSlotHost.attachShadow({ mode: 'open' }).innerHTML =
+        '<section><slot name="body">The meticulous dynamic fallback body is visible.</slot></section>';
+      const noSlotHost = document.querySelector('#no-slot-host');
+      noSlotHost.attachShadow({ mode: 'open' }).innerHTML = '<p>The meticulous no-slot shadow body is visible.</p>';
     </script>
     <script type="module" src="/${contentBundle}"></script>
   </body>
@@ -338,8 +414,58 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
   await page.goto(compatUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
   console.log('Checking compatibility page...');
 
-  const articleWord = page.locator('article > p:not([hidden]):not([aria-hidden]) [data-qianci-word="meticulous"]');
+  const articleWord = page.locator('#main-article-paragraph [data-qianci-word="meticulous"]');
   await articleWord.waitFor({ state: 'visible', timeout: 10_000 });
+  const landmarkAnnotatedCounts = [
+    await page.locator('#site-nav [data-qianci-word]').count(),
+    await page.locator('#breadcrumb [data-qianci-word]').count(),
+    await page.locator('#page-footer [data-qianci-word]').count(),
+    await page.locator('#page-contentinfo [data-qianci-word]').count()
+  ];
+  if (landmarkAnnotatedCounts.some((count) => count !== 0)) {
+    throw new Error(`Navigation and footer landmarks should not be annotated: ${landmarkAnnotatedCounts.join('/')}`);
+  }
+  const liveRegionAnnotatedCounts = [
+    await page.locator('#polite-live [data-qianci-word]').count(),
+    await page.locator('#status-toast [data-qianci-word]').count(),
+    await page.locator('#alert-toast [data-qianci-word]').count()
+  ];
+  if (liveRegionAnnotatedCounts.some((count) => count !== 0)) {
+    throw new Error(`Live regions should not start annotated: ${liveRegionAnnotatedCounts.join('/')}`);
+  }
+  await page.locator('#polite-live').evaluate((region) => {
+    region.removeAttribute('aria-live');
+  });
+  await page.locator('#polite-live [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  const headerAdjacentWord = page.locator('.near-fixed-header-word [data-qianci-word="meticulous"]');
+  await headerAdjacentWord.click({ timeout: 10_000 });
+  await page.locator('[data-qianci-tooltip]').waitFor({ state: 'visible', timeout: 10_000 });
+  const tooltipOverlapsHeader = await page.evaluate(() => {
+    const header = document.querySelector('#fixed-smoke-header');
+    const tooltip = document.querySelector('[data-qianci-tooltip]');
+    if (!(header instanceof HTMLElement) || !(tooltip instanceof HTMLElement)) {
+      throw new Error('Missing fixed header or tooltip for occlusion check');
+    }
+
+    const headerRect = header.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    return !(
+      tooltipRect.bottom <= headerRect.top ||
+      tooltipRect.top >= headerRect.bottom ||
+      tooltipRect.right <= headerRect.left ||
+      tooltipRect.left >= headerRect.right
+    );
+  });
+  if (tooltipOverlapsHeader) {
+    throw new Error('Tooltip should not overlap the fixed smoke header');
+  }
+  await page.locator('#late-shadow-host').evaluate((host) => {
+    host.attachShadow({ mode: 'open' }).innerHTML = '<p>The meticulous late shadow body appears.</p>';
+  });
+  await page.waitForFunction(() => {
+    const shadowRoot = document.querySelector('#late-shadow-host')?.shadowRoot;
+    return shadowRoot?.querySelectorAll('[data-qianci-word="meticulous"]').length === 1;
+  });
   const dynamicIgnoredWord = page.locator('#dynamic-ignore [data-qianci-word="meticulous"]');
   await dynamicIgnoredWord.waitFor({ state: 'visible', timeout: 10_000 });
   await page.locator('#dynamic-ignore').evaluate((element) => {
@@ -366,6 +492,60 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
     panel.classList.remove('d-none');
   });
   await page.locator('#class-hidden [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  const bootstrapA11yAnnotated = await page.locator('#bootstrap-a11y [data-qianci-word]').count();
+  const tailwindA11yAnnotated = await page.locator('#tailwind-a11y [data-qianci-word]').count();
+  if (bootstrapA11yAnnotated !== 0 || tailwindA11yAnnotated !== 0) {
+    throw new Error(
+      `Screen-reader-only text should not start annotated: ${bootstrapA11yAnnotated}/${tailwindA11yAnnotated}`
+    );
+  }
+  await page.locator('#bootstrap-a11y').evaluate((label) => {
+    label.classList.remove('visually-hidden');
+  });
+  await page.locator('#tailwind-a11y').evaluate((label) => {
+    label.classList.remove('sr-only');
+  });
+  await page.locator('#bootstrap-a11y [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.locator('#tailwind-a11y [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  const computedHiddenSelectors = [
+    '#css-invisible',
+    '#css-transparent',
+    '#css-content-hidden',
+    '#css-selector-hidden',
+    '#measurement-row',
+    '#css-offscreen',
+    '#css-clipped'
+  ];
+  for (const selector of computedHiddenSelectors) {
+    const annotatedCount = await page.locator(`${selector} [data-qianci-word]`).count();
+    if (annotatedCount !== 0) {
+      throw new Error(`Computed hidden region ${selector} should not start annotated, got ${annotatedCount}`);
+    }
+  }
+  await page.locator('#css-invisible').evaluate((panel) => {
+    panel.classList.remove('css-invisible');
+  });
+  await page.locator('#css-transparent').evaluate((panel) => {
+    panel.classList.remove('css-transparent');
+  });
+  await page.locator('#css-content-hidden').evaluate((panel) => {
+    panel.classList.remove('css-content-hidden');
+  });
+  await page.locator('#css-selector-hidden').evaluate((panel) => {
+    panel.removeAttribute('data-selector-hidden');
+  });
+  await page.locator('#measurement-row').evaluate((panel) => {
+    panel.classList.remove('measurement-row');
+  });
+  await page.locator('#css-offscreen').evaluate((panel) => {
+    panel.classList.remove('css-offscreen');
+  });
+  await page.locator('#css-clipped').evaluate((panel) => {
+    panel.classList.remove('css-clipped');
+  });
+  for (const selector of computedHiddenSelectors) {
+    await page.locator(`${selector} [data-qianci-word="meticulous"]`).waitFor({ state: 'visible', timeout: 10_000 });
+  }
 
   const closedDetailsAnnotated = await page.locator('#details-panel p [data-qianci-word]').count();
   if (closedDetailsAnnotated !== 0) {
@@ -400,6 +580,38 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
     panel.classList.add('show');
   });
   await page.locator('#bootstrap-panel [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  const hiddenDropdownAnnotated = await page.locator('#dropdown-menu [data-qianci-word]').count();
+  if (hiddenDropdownAnnotated !== 0) {
+    throw new Error(`Hidden Bootstrap dropdown should not be annotated, got ${hiddenDropdownAnnotated}`);
+  }
+  await page.locator('#dropdown-menu').evaluate((menu) => {
+    menu.classList.add('show');
+  });
+  await page.locator('#dropdown-menu [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.locator('#dropdown-menu').evaluate((menu) => {
+    menu.classList.remove('show');
+  });
+  await page.waitForFunction(() => document.querySelector('#dropdown-menu [data-qianci-word]') === null);
+  const nativePopoverAnnotated = await page.locator('#native-popover [data-qianci-word]').count();
+  const statefulPopoverAnnotated = await page.locator('#stateful-popover [data-qianci-word]').count();
+  if (nativePopoverAnnotated !== 0 || statefulPopoverAnnotated !== 0) {
+    throw new Error(
+      `Closed popover content should not start annotated: ${nativePopoverAnnotated}/${statefulPopoverAnnotated}`
+    );
+  }
+  await page.locator('#native-popover').evaluate((popover) => {
+    const nativePopover = popover as HTMLElement & { showPopover?: () => void };
+    nativePopover.showPopover?.();
+  });
+  await page.locator('#native-popover [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.locator('#stateful-popover').evaluate((popover) => {
+    popover.setAttribute('data-state', 'open');
+  });
+  await page.locator('#stateful-popover [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.locator('#stateful-popover').evaluate((popover) => {
+    popover.setAttribute('data-state', 'closed');
+  });
+  await page.waitForFunction(() => document.querySelector('#stateful-popover [data-qianci-word]') === null);
   await page.locator('#active-tab-panel [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
   const inactiveTabAnnotated = await page.locator('#inactive-tab-panel [data-qianci-word]').count();
   if (inactiveTabAnnotated !== 0) {
@@ -436,6 +648,59 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
     const shadowRoot = document.querySelector('#shadow-host')?.shadowRoot;
     return shadowRoot?.querySelectorAll('[data-qianci-word="meticulous"]').length === 1;
   });
+  await page.locator('#slot-host [slot="body"] [data-qianci-word="meticulous"]').waitFor({
+    state: 'visible',
+    timeout: 10_000
+  });
+  const slotFallbackAnnotated = await page.evaluate(() => {
+    const shadowRoot = document.querySelector('#slot-host')?.shadowRoot;
+    return shadowRoot?.querySelectorAll('slot [data-qianci-word]').length ?? 0;
+  });
+  if (slotFallbackAnnotated !== 0) {
+    throw new Error(`Assigned slot fallback should not be annotated, got ${slotFallbackAnnotated}`);
+  }
+  await page.waitForFunction(() => {
+    const shadowRoot = document.querySelector('#fallback-slot-host')?.shadowRoot;
+    return shadowRoot?.querySelectorAll('slot [data-qianci-word="meticulous"]').length === 1;
+  });
+  await page.waitForFunction(() => {
+    const shadowRoot = document.querySelector('#dynamic-slot-host')?.shadowRoot;
+    return shadowRoot?.querySelectorAll('slot [data-qianci-word="meticulous"]').length === 1;
+  });
+  await page.locator('#dynamic-slot-host').evaluate((host) => {
+    const assignedParagraph = document.createElement('p');
+    assignedParagraph.slot = 'body';
+    assignedParagraph.textContent = 'The meticulous dynamic assigned body is visible.';
+    host.append(assignedParagraph);
+  });
+  await page.locator('#dynamic-slot-host > [slot="body"] [data-qianci-word="meticulous"]').waitFor({
+    state: 'visible',
+    timeout: 10_000
+  });
+  const dynamicSlotFallbackAnnotated = await page.evaluate(() => {
+    const shadowRoot = document.querySelector('#dynamic-slot-host')?.shadowRoot;
+    return shadowRoot?.querySelectorAll('slot [data-qianci-word]').length ?? 0;
+  });
+  if (dynamicSlotFallbackAnnotated !== 0) {
+    throw new Error(`Dynamic assigned slot fallback should not be annotated, got ${dynamicSlotFallbackAnnotated}`);
+  }
+  await page.locator('#dynamic-slot-host > [slot="body"]').evaluate((assignedNode) => {
+    assignedNode.remove();
+  });
+  await page.waitForFunction(() => {
+    const shadowRoot = document.querySelector('#dynamic-slot-host')?.shadowRoot;
+    return shadowRoot?.querySelectorAll('slot [data-qianci-word="meticulous"]').length === 1;
+  });
+  await page.waitForFunction(() => {
+    const shadowRoot = document.querySelector('#no-slot-host')?.shadowRoot;
+    return shadowRoot?.querySelectorAll('[data-qianci-word="meticulous"]').length === 1;
+  });
+  const noSlotLightDomAnnotated = await page.evaluate(() => {
+    return document.querySelector('#no-slot-host')?.querySelectorAll('[data-qianci-word]').length ?? 0;
+  });
+  if (noSlotLightDomAnnotated !== 0) {
+    throw new Error(`Unassigned light DOM should not be annotated, got ${noSlotLightDomAnnotated}`);
+  }
   const iframeAnnotated = await page.locator('#embedded-copy').evaluate((iframe) => {
     const frame = iframe as HTMLIFrameElement;
     return frame.contentDocument?.querySelectorAll('[data-qianci-word]').length ?? 0;
@@ -458,10 +723,16 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
   });
   const disappearingWord = page.locator('#disappearing-row [data-qianci-word="ubiquitous"]');
   await disappearingWord.waitFor({ state: 'visible', timeout: 10_000 });
-  await disappearingWord.click({ timeout: 10_000 });
   await page.locator('#disappearing-row').evaluate((row) => {
-    row.remove();
+    row.addEventListener(
+      'click',
+      () => {
+        row.remove();
+      },
+      { capture: true, once: true }
+    );
   });
+  await disappearingWord.click({ timeout: 10_000 });
   await page.waitForTimeout(100);
   const orphanTooltipText = await page.evaluate(() => {
     const element = document.querySelector('[data-qianci-tooltip]');
@@ -503,7 +774,7 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
     stayedOnPage: page.url() === compatUrl,
     anchorClicks: await page.evaluate(() => (window as unknown as { anchorClicks: number }).anchorClicks),
     linkAnnotated: await page.locator('a [data-qianci-word="unobtrusive"]').count(),
-    articleAnnotated: await page.locator('article > p:not([hidden]):not([aria-hidden]) [data-qianci-word="meticulous"]').count(),
+    articleAnnotated: await page.locator('#main-article-paragraph [data-qianci-word="meticulous"]').count(),
     roleButtonAnnotated: await page.locator('[role="button"] [data-qianci-word]').count(),
     roleMenuitemAnnotated: await page.locator('[role="menuitem"] [data-qianci-word]').count(),
     summaryAnnotated: await page.locator('summary [data-qianci-word]').count(),

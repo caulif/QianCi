@@ -56,6 +56,8 @@ const RESCAN_DELAY_MS = 24;
 const SKIP_FEEDBACK_DELAY_MS = 3500;
 const SCAN_SLICE_BUDGET_MS = 8;
 const SCAN_CONTINUATION_DELAY_MS = 0;
+const SHADOW_DISCOVERY_INTERVAL_MS = 250;
+const SHADOW_DISCOVERY_MAX_ATTEMPTS = 20;
 
 /**
  * Reads weak-skip delay from newer profiles while preserving old-profile defaults.
@@ -155,6 +157,11 @@ function selectionAnchor(doc: Document, fallback?: HTMLElement): HTMLElement | R
   return fallback ?? doc.body;
 }
 
+interface ShadowDiscoveryHost {
+  host: HTMLElement;
+  attempts: number;
+}
+
 export function createContentApp(doc: Document, services: ContentServices): ContentApp {
   let disposed = false;
   let profile = services.profile;
@@ -164,12 +171,16 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
   const skipCandidates = new Map<HTMLElement, { word: string; observedAt: number; pageKey: string }>();
   const interactedWords = new WeakSet<HTMLElement>();
   const pendingRoots = new Set<ParentNode>();
+  const shadowDiscoveryHosts: ShadowDiscoveryHost[] = [];
+  const trackedShadowDiscoveryHosts = new WeakSet<HTMLElement>();
+  const slotEventRoots: EventTarget[] = [];
   let observedRoots = new WeakSet<ParentNode>();
   let observedRootList: ParentNode[] = [];
   const nodeQueue: Node[] = [];
   let nodeQueueIndex = 0;
   let rescanTimer = 0;
   let scanContinuationTimer = 0;
+  let shadowDiscoveryTimer = 0;
   let skipFeedbackTimer = 0;
   let observer: MutationObserver | null = null;
   let scannedTextNodes = 0;
@@ -744,6 +755,8 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
         if (node instanceof HTMLElement && node.shadowRoot) {
           observeRoot(node.shadowRoot);
           nodeQueue.push(node.shadowRoot);
+        } else if (node instanceof HTMLElement) {
+          trackShadowDiscoveryHost(node);
         }
 
         nodeQueue.push(...Array.from(node.childNodes));
@@ -776,26 +789,16 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
 
     observer.observe(root, {
       attributes: true,
-      attributeFilter: [
-        'class',
-        'hidden',
-        'inert',
-        'aria-hidden',
-        'aria-controls',
-        'aria-expanded',
-        'aria-selected',
-        'role',
-        'contenteditable',
-        'data-qianci-ignore',
-        'style',
-        'open'
-      ],
       childList: true,
       characterData: true,
       subtree: true
     });
     observedRoots.add(root);
     observedRootList.push(root);
+    if (root instanceof ShadowRoot) {
+      root.addEventListener('slotchange', handleSlotChange, true);
+      slotEventRoots.push(root);
+    }
   }
 
   function observeBody(): void {
@@ -813,6 +816,138 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
 
     addPendingRoot(root);
     scheduleScanPreparation();
+  }
+
+  /**
+   * Tracks custom-element hosts that may attach an open shadow root after the first scan.
+   *
+   * @param element Element visited by the scanner.
+   * @returns Nothing.
+   */
+  function trackShadowDiscoveryHost(element: HTMLElement): void {
+    if (!element.localName.includes('-') || trackedShadowDiscoveryHosts.has(element)) {
+      return;
+    }
+
+    trackedShadowDiscoveryHosts.add(element);
+    shadowDiscoveryHosts.push({ host: element, attempts: 0 });
+    scheduleShadowDiscovery();
+  }
+
+  /**
+   * Schedules bounded low-frequency discovery for late open shadow roots.
+   *
+   * @returns Nothing.
+   */
+  function scheduleShadowDiscovery(): void {
+    if (shadowDiscoveryTimer || disposed || siteMode !== 'auto' || !shadowDiscoveryHosts.length) {
+      return;
+    }
+
+    shadowDiscoveryTimer = window.setTimeout(runShadowDiscovery, SHADOW_DISCOVERY_INTERVAL_MS);
+  }
+
+  /**
+   * Finds late attached open shadow roots without continuously rescanning the page.
+   *
+   * @returns Nothing.
+   */
+  function runShadowDiscovery(): void {
+    shadowDiscoveryTimer = 0;
+    if (disposed || siteMode !== 'auto') {
+      shadowDiscoveryHosts.length = 0;
+      return;
+    }
+
+    const pendingHosts = shadowDiscoveryHosts.splice(0);
+    for (const entry of pendingHosts) {
+      if (!entry.host.isConnected) {
+        continue;
+      }
+      if (entry.host.shadowRoot) {
+        observeRoot(entry.host.shadowRoot);
+        scheduleScan(entry.host.shadowRoot);
+        continue;
+      }
+      if (entry.attempts + 1 < SHADOW_DISCOVERY_MAX_ATTEMPTS) {
+        shadowDiscoveryHosts.push({ host: entry.host, attempts: entry.attempts + 1 });
+      }
+    }
+
+    scheduleShadowDiscovery();
+  }
+
+  /**
+   * Clears pending late-shadow discovery work for pause or disposal.
+   *
+   * @returns Nothing.
+   */
+  function clearShadowDiscovery(): void {
+    shadowDiscoveryHosts.length = 0;
+    if (shadowDiscoveryTimer) {
+      window.clearTimeout(shadowDiscoveryTimer);
+      shadowDiscoveryTimer = 0;
+    }
+  }
+
+  /**
+   * Handles native popover top-layer state changes that do not mutate attributes.
+   *
+   * @param event Toggle event dispatched by a native popover element.
+   * @returns Nothing.
+   */
+  function handlePopoverToggle(event: Event): void {
+    if (disposed || siteMode !== 'auto') {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || !target.hasAttribute('popover')) {
+      return;
+    }
+
+    if (shouldCleanAnnotatedRoot(target)) {
+      removeAnnotationsInRoot(target);
+      return;
+    }
+
+    scheduleScan(target);
+  }
+
+  /**
+   * Handles slot distribution changes that do not mutate fallback text itself.
+   *
+   * @param event Slot change event dispatched from an observed shadow root.
+   * @returns Nothing.
+   */
+  function handleSlotChange(event: Event): void {
+    if (disposed || siteMode !== 'auto') {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof HTMLSlotElement)) {
+      return;
+    }
+
+    if (target.assignedNodes().length > 0) {
+      removeAnnotationsInRoot(target);
+      return;
+    }
+
+    scheduleScan(target);
+  }
+
+  /**
+   * Removes slotchange listeners from observed shadow roots.
+   *
+   * @returns Nothing.
+   */
+  function clearSlotEventRoots(): void {
+    for (const root of slotEventRoots) {
+      root.removeEventListener('slotchange', handleSlotChange, true);
+    }
+    slotEventRoots.length = 0;
   }
 
   /**
@@ -897,6 +1032,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       }
     }
   });
+  doc.addEventListener('toggle', handlePopoverToggle, true);
   if (siteMode === 'auto') {
     observeBody();
   }
@@ -913,6 +1049,8 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
 
   function pauseAutomaticAnnotation(): void {
     clearScanWork();
+    clearShadowDiscovery();
+    clearSlotEventRoots();
     observer?.disconnect();
     skipCandidates.clear();
     tooltip.hide();
@@ -958,12 +1096,15 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     dispose() {
       disposed = true;
       doc.removeEventListener('mouseup', handleManualSelection);
+      doc.removeEventListener('toggle', handlePopoverToggle, true);
       skipCandidates.clear();
       if (skipFeedbackTimer) {
         window.clearTimeout(skipFeedbackTimer);
         skipFeedbackTimer = 0;
       }
       clearScanWork();
+      clearShadowDiscovery();
+      clearSlotEventRoots();
       observer?.disconnect();
       observer = null;
       tooltip.dispose();

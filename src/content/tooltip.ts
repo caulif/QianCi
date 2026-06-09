@@ -32,6 +32,7 @@ export interface TooltipShowOptions {
 const TOOLTIP_WIDTH = 220;
 const TOOLTIP_HEIGHT = 108;
 const HIDE_DELAY_MS = 140;
+const TOP_OCCLUSION_SAMPLE_X = [0.15, 0.5, 0.85];
 
 interface TextLineOptions {
   role?: string;
@@ -430,6 +431,40 @@ export function createTooltipController(doc: Document): TooltipController {
     scheduleHide();
   }
 
+  /**
+   * Detects fixed or sticky elements occupying the top of the viewport.
+   *
+   * @returns Bottom edge of the top occlusion area in viewport coordinates.
+   */
+  function topOcclusionInset(): number {
+    const view = doc.defaultView ?? window;
+    if (typeof doc.elementsFromPoint !== 'function') {
+      return 0;
+    }
+
+    const sampleY = 1;
+    let inset = 0;
+    for (const ratio of TOP_OCCLUSION_SAMPLE_X) {
+      const x = Math.max(0, Math.floor((view.innerWidth || 1280) * ratio));
+      for (const element of doc.elementsFromPoint(x, sampleY)) {
+        if (!(element instanceof HTMLElement) || element === tooltipHost || tooltipHost.contains(element)) {
+          continue;
+        }
+
+        const style = view.getComputedStyle(element);
+        if (style.position !== 'fixed' && style.position !== 'sticky') {
+          continue;
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.top <= sampleY && rect.bottom > sampleY) {
+          inset = Math.max(inset, rect.bottom);
+        }
+      }
+    }
+    return inset;
+  }
+
   function place(anchor: HTMLElement | RectLike): void {
     const rect =
       'getBoundingClientRect' in anchor
@@ -439,7 +474,8 @@ export function createTooltipController(doc: Document): TooltipController {
     const placement = chooseTooltipPlacement(
       { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
       { width: view.innerWidth || 1280, height: view.innerHeight || 900 },
-      { width: TOOLTIP_WIDTH, height: TOOLTIP_HEIGHT }
+      { width: TOOLTIP_WIDTH, height: TOOLTIP_HEIGHT },
+      { topInset: topOcclusionInset() }
     );
 
     tooltipHost.style.left = `${placement.x}px`;

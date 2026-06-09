@@ -47,4 +47,17 @@ describe('tooltip placement', () => {
     expect(placement.vertical).toBe('above');
     expect(placement.y).toBeLessThan(40);
   });
+
+  it('places the tooltip below the word when a fixed header would cover the raised card', () => {
+    const placement = chooseTooltipPlacement(
+      { x: 240, y: 96, width: 64, height: 20 },
+      { width: 1280, height: 900 },
+      { width: 180, height: 88 },
+      { topInset: 72 }
+    );
+
+    expect(placement.side).toBe('right');
+    expect(placement.vertical).toBe('below');
+    expect(placement.y).toBeGreaterThan(116);
+  });
 });

@@ -2,6 +2,10 @@ export const SKIP_SELECTOR = [
   'script',
   'style',
   'noscript',
+  'nav',
+  '[role="navigation"]',
+  'body > footer',
+  '[role="contentinfo"]',
   'textarea',
   'input',
   'select',
@@ -20,6 +24,10 @@ export const SKIP_SELECTOR = [
   '[hidden]',
   '[inert]',
   '[aria-hidden="true"]',
+  '[aria-live]:not([aria-live="off"])',
+  '[role="status"]',
+  '[role="alert"]',
+  '[role="log"]',
   '[role="textbox"]',
   '[role="button"]',
   '[role="link"]',
@@ -56,18 +64,82 @@ export function shouldSkipTextNode(text: Text): boolean {
   }
   return (
     Boolean(parent.closest(SKIP_SELECTOR)) ||
+    hasAssignedSlotAncestor(parent) ||
+    hasUnassignedShadowHostLightDomAncestor(parent) ||
     hasHiddenAncestor(parent) ||
     hasClosedDetailsAncestor(parent) ||
     hasClosedDialogAncestor(parent) ||
     hasCollapsedAriaPanelAncestor(parent) ||
     hasBootstrapCollapsedAncestor(parent) ||
+    hasBootstrapHiddenOverlayAncestor(parent) ||
+    hasClosedNativePopoverAncestor(parent) ||
+    hasClosedStatefulOverlayAncestor(parent) ||
     hasInactiveAriaTabPanelAncestor(parent) ||
     hasBootstrapInactiveTabPaneAncestor(parent)
   );
 }
 
 /**
- * Checks whether an element or one of its ancestors is hidden by inline style.
+ * Checks whether text belongs to non-rendered fallback content of an assigned slot.
+ *
+ * @param element Element that owns a text node.
+ * @returns True when a containing slot renders assigned light-DOM nodes instead.
+ */
+export function hasAssignedSlotAncestor(element: HTMLElement): boolean {
+  const slot = element.closest('slot');
+  if (!(slot instanceof HTMLSlotElement)) {
+    return false;
+  }
+
+  return slot.assignedNodes().length > 0;
+}
+
+/**
+ * Checks whether text belongs to light DOM that a shadow host does not render.
+ *
+ * @param element Element that owns a text node.
+ * @returns True when the nearest shadow host has no matching slot for this light-DOM branch.
+ */
+export function hasUnassignedShadowHostLightDomAncestor(element: HTMLElement): boolean {
+  for (let host = element.parentElement; host; host = host.parentElement) {
+    if (!host.shadowRoot) {
+      continue;
+    }
+
+    const directChild = directLightDomChildOfHost(element, host);
+    return Boolean(directChild && !assignedSlotOf(directChild));
+  }
+  return false;
+}
+
+/**
+ * Finds the direct light-DOM child under a shadow host for a descendant element.
+ *
+ * @param element Descendant element being checked.
+ * @param host Shadow host containing the light-DOM branch.
+ * @returns Direct slottable child of the host, or null when not found.
+ */
+function directLightDomChildOfHost(element: HTMLElement, host: HTMLElement): Element | null {
+  let current: Element = element;
+  while (current.parentElement && current.parentElement !== host) {
+    current = current.parentElement;
+  }
+
+  return current.parentElement === host ? current : null;
+}
+
+/**
+ * Reads assignedSlot from slottable nodes without assuming a specific node subtype.
+ *
+ * @param node Potential slottable light-DOM node.
+ * @returns Assigned slot, or null when the node is not rendered by a slot.
+ */
+function assignedSlotOf(node: Element): HTMLSlotElement | null {
+  return node.assignedSlot;
+}
+
+/**
+ * Checks whether an element or one of its ancestors is visually hidden.
  *
  * @param element Element that owns a text node.
  * @returns True when automatic annotation should ignore this subtree.
@@ -76,11 +148,146 @@ export function hasHiddenAncestor(element: HTMLElement): boolean {
   for (let current: HTMLElement | null = element; current; current = current.parentElement) {
     const display = current.style.display.trim().toLowerCase();
     const visibility = current.style.visibility.trim().toLowerCase();
-    if (display === 'none' || visibility === 'hidden' || visibility === 'collapse' || hasCommonHiddenClass(current)) {
+    if (
+      display === 'none' ||
+      visibility === 'hidden' ||
+      visibility === 'collapse' ||
+      hasCommonHiddenClass(current) ||
+      hasComputedHiddenStyle(current)
+    ) {
       return true;
     }
   }
   return false;
+}
+
+/**
+ * Checks computed CSS that hides an element without using explicit DOM attributes.
+ *
+ * @param element Element whose computed style should be checked.
+ * @returns True when the element is styled as visually unavailable.
+ */
+function hasComputedHiddenStyle(element: HTMLElement): boolean {
+  const view = element.ownerDocument.defaultView;
+  if (!view || !hasComputedStyleSignal(element)) {
+    return false;
+  }
+  if (element.hasAttribute('popover') && isNativePopoverOpen(element)) {
+    return false;
+  }
+
+  const style = view.getComputedStyle(element);
+  const display = style.display.trim().toLowerCase();
+  const visibility = style.visibility.trim().toLowerCase();
+  const opacity = style.opacity.trim();
+  if (display === 'none' || visibility === 'hidden' || visibility === 'collapse' || opacity === '0') {
+    return true;
+  }
+
+  return (
+    hasContentHiddenStyle(style) ||
+    hasClippedHiddenStyle(style) ||
+    hasZeroSizeOverflowHiddenStyle(style) ||
+    hasOffscreenHiddenStyle(style)
+  );
+}
+
+/**
+ * Checks whether an element has selectors likely to participate in author CSS rules.
+ *
+ * @param element Element considered for computed style inspection.
+ * @returns True when reading computed style is worth the compatibility cost.
+ */
+function hasComputedStyleSignal(element: HTMLElement): boolean {
+  return Boolean(element.className || element.id || element.getAttribute('style') || element.attributes.length);
+}
+
+/**
+ * Checks CSS containment styles that skip painting a subtree.
+ *
+ * @param style Computed style for the current element.
+ * @returns True when content visibility hides the subtree.
+ */
+function hasContentHiddenStyle(style: CSSStyleDeclaration): boolean {
+  return style.getPropertyValue('content-visibility').trim().toLowerCase() === 'hidden';
+}
+
+/**
+ * Checks classic screen-reader-only clipping styles.
+ *
+ * @param style Computed style for the current element.
+ * @returns True when clipping makes a tiny element visually unavailable.
+ */
+function hasClippedHiddenStyle(style: CSSStyleDeclaration): boolean {
+  const clip = style.getPropertyValue('clip').trim().toLowerCase();
+  const clipPath = style.getPropertyValue('clip-path').trim().toLowerCase();
+  if ((!clip || clip === 'auto') && (!clipPath || clipPath === 'none')) {
+    return false;
+  }
+
+  return numericCssPx(style.width) <= 1 && numericCssPx(style.height) <= 1;
+}
+
+/**
+ * Checks virtualizer or measuring rows that collapse text into a zero-size clipped box.
+ *
+ * @param style Computed style for the current element.
+ * @returns True when zero-size overflow clipping makes text visually unavailable.
+ */
+function hasZeroSizeOverflowHiddenStyle(style: CSSStyleDeclaration): boolean {
+  if (!isOverflowClipped(style)) {
+    return false;
+  }
+
+  return numericCssPx(style.width) === 0 || numericCssPx(style.height) === 0;
+}
+
+/**
+ * Checks whether overflow clipping can hide collapsed content.
+ *
+ * @param style Computed style for the current element.
+ * @returns True when either axis clips overflowing content.
+ */
+function isOverflowClipped(style: CSSStyleDeclaration): boolean {
+  return (
+    style.overflow.trim().toLowerCase() === 'hidden' ||
+    style.overflowX.trim().toLowerCase() === 'hidden' ||
+    style.overflowY.trim().toLowerCase() === 'hidden' ||
+    style.overflow.trim().toLowerCase() === 'clip' ||
+    style.overflowX.trim().toLowerCase() === 'clip' ||
+    style.overflowY.trim().toLowerCase() === 'clip'
+  );
+}
+
+/**
+ * Checks offscreen utility styles commonly used for hidden assistive text.
+ *
+ * @param style Computed style for the current element.
+ * @returns True when the element is positioned far outside the viewport.
+ */
+function hasOffscreenHiddenStyle(style: CSSStyleDeclaration): boolean {
+  const position = style.position.trim().toLowerCase();
+  if (position !== 'absolute' && position !== 'fixed') {
+    return false;
+  }
+
+  return numericCssPx(style.left) <= -1000 || numericCssPx(style.top) <= -1000;
+}
+
+/**
+ * Parses a computed pixel value and treats non-pixel values as visible.
+ *
+ * @param value CSS length value from computed style.
+ * @returns Numeric pixel value, or positive infinity when parsing is unsafe.
+ */
+function numericCssPx(value: string): number {
+  const trimmedValue = value.trim().toLowerCase();
+  if (!trimmedValue.endsWith('px')) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const parsedValue = Number.parseFloat(trimmedValue);
+  return Number.isFinite(parsedValue) ? parsedValue : Number.POSITIVE_INFINITY;
 }
 
 /**
@@ -93,7 +300,9 @@ function hasCommonHiddenClass(element: HTMLElement): boolean {
   return (
     element.classList.contains('d-none') ||
     element.classList.contains('hidden') ||
-    element.classList.contains('is-hidden')
+    element.classList.contains('is-hidden') ||
+    element.classList.contains('visually-hidden') ||
+    element.classList.contains('sr-only')
   );
 }
 
@@ -187,6 +396,108 @@ export function hasInactiveAriaTabPanelAncestor(element: HTMLElement): boolean {
 }
 
 /**
+ * Checks whether text is inside a Bootstrap overlay that is hidden until `.show`.
+ *
+ * @param element Element that owns a text node.
+ * @returns True when a common Bootstrap overlay container is currently hidden.
+ */
+export function hasBootstrapHiddenOverlayAncestor(element: HTMLElement): boolean {
+  for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+    if (
+      isBootstrapOverlayContainer(current) &&
+      !current.classList.contains('show') &&
+      !current.classList.contains('showing')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Checks whether an element is a Bootstrap overlay container controlled by visibility classes.
+ *
+ * @param element Potential Bootstrap overlay container.
+ * @returns True when the element matches a known Bootstrap overlay type.
+ */
+function isBootstrapOverlayContainer(element: HTMLElement): boolean {
+  return (
+    element.classList.contains('dropdown-menu') ||
+    element.classList.contains('modal') ||
+    element.classList.contains('offcanvas')
+  );
+}
+
+/**
+ * Checks whether text is inside a native popover that is not currently open.
+ *
+ * @param element Element that owns a text node.
+ * @returns True when the closest native popover is closed.
+ */
+export function hasClosedNativePopoverAncestor(element: HTMLElement): boolean {
+  for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+    if (!current.hasAttribute('popover')) {
+      continue;
+    }
+
+    return !isNativePopoverOpen(current);
+  }
+  return false;
+}
+
+/**
+ * Checks whether a native popover is visible in the top layer.
+ *
+ * @param element Native popover element.
+ * @returns True when the popover is currently open.
+ */
+function isNativePopoverOpen(element: HTMLElement): boolean {
+  if (element.getAttribute('data-state') === 'open') {
+    return true;
+  }
+
+  try {
+    return element.matches(':popover-open');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks Radix/Headless-style overlay state containers that are mounted while closed.
+ *
+ * @param element Element that owns a text node.
+ * @returns True when a popup-like ancestor is explicitly closed.
+ */
+export function hasClosedStatefulOverlayAncestor(element: HTMLElement): boolean {
+  for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+    if (current.getAttribute('data-state') === 'closed' && isStatefulOverlayContainer(current)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Checks whether a stateful element looks like mounted overlay content rather than a trigger.
+ *
+ * @param element Potential popup content container.
+ * @returns True when the element matches common overlay content signals.
+ */
+function isStatefulOverlayContainer(element: HTMLElement): boolean {
+  const role = element.getAttribute('role');
+  return (
+    role === 'dialog' ||
+    role === 'menu' ||
+    role === 'listbox' ||
+    role === 'tooltip' ||
+    element.hasAttribute('data-side') ||
+    element.hasAttribute('data-align') ||
+    element.hasAttribute('popover')
+  );
+}
+
+/**
  * Checks whether text is inside an inactive Bootstrap tab pane.
  *
  * @param element Element that owns a text node.
@@ -233,6 +544,9 @@ export function shouldCleanAnnotatedRoot(element: HTMLElement): boolean {
     hasClosedDialogAncestor(element) ||
     hasCollapsedAriaPanelAncestor(element) ||
     hasBootstrapCollapsedAncestor(element) ||
+    hasBootstrapHiddenOverlayAncestor(element) ||
+    hasClosedNativePopoverAncestor(element) ||
+    hasClosedStatefulOverlayAncestor(element) ||
     hasInactiveAriaTabPanelAncestor(element) ||
     hasBootstrapInactiveTabPaneAncestor(element)
   );

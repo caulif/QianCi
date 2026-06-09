@@ -156,6 +156,40 @@ describe('content compatibility', () => {
     app.dispose();
   });
 
+  it('skips navigation and page footer landmarks while annotating article content', async () => {
+    document.body.innerHTML = `
+      <nav>The meticulous navigation menu should stay untouched.</nav>
+      <div role="navigation">The meticulous breadcrumb should stay untouched.</div>
+      <main>
+        <article>
+          <p>The meticulous article paragraph remains readable.</p>
+        </article>
+      </main>
+      <footer>The meticulous page footer should stay untouched.</footer>
+      <div role="contentinfo">The meticulous content info should stay untouched.</div>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    expect(document.querySelector('article [data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(document.querySelector('nav [data-qianci-word]')).toBeNull();
+    expect(document.querySelector('[role="navigation"] [data-qianci-word]')).toBeNull();
+    expect(document.querySelector('footer [data-qianci-word]')).toBeNull();
+    expect(document.querySelector('[role="contentinfo"] [data-qianci-word]')).toBeNull();
+    app.dispose();
+  });
+
   it('does not annotate custom interactive controls that should keep native page behavior', async () => {
     document.body.innerHTML = `
       <article>
@@ -306,6 +340,96 @@ describe('content compatibility', () => {
     app.dispose();
   });
 
+  it('annotates open shadow roots attached after the host is already observed', async () => {
+    document.body.innerHTML = '<article><late-shadow-reader id="late-host"></late-shadow-reader></article>';
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const host = document.querySelector('#late-host') as HTMLElement;
+    const shadowRoot = host.attachShadow({ mode: 'open' });
+    shadowRoot.innerHTML = '<p>The meticulous late shadow text appears.</p>';
+    vi.advanceTimersByTime(250);
+    await flushScanWork();
+
+    expect(shadowRoot.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    app.dispose();
+  });
+
+  it('skips shadow slot fallback text when assigned slot content is rendered', async () => {
+    document.body.innerHTML = `
+      <article>
+        <slot-reader id="slot-host">
+          <p slot="body">The meticulous assigned slot text is visible.</p>
+        </slot-reader>
+      </article>
+    `;
+
+    const host = document.querySelector('#slot-host') as HTMLElement;
+    const shadowRoot = host.attachShadow({ mode: 'open' });
+    shadowRoot.innerHTML = `
+      <section>
+        <slot name="body">The meticulous fallback slot text is hidden.</slot>
+      </section>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    expect(host.querySelector('[slot="body"] [data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(shadowRoot.querySelector('slot [data-qianci-word]')).toBeNull();
+    expect(shadowRoot.querySelector('slot')?.textContent).toContain('The meticulous fallback slot text is hidden.');
+    app.dispose();
+  });
+
+  it('annotates shadow slot fallback text when no assigned content exists', async () => {
+    document.body.innerHTML = '<article><fallback-slot-reader id="fallback-slot-host"></fallback-slot-reader></article>';
+
+    const host = document.querySelector('#fallback-slot-host') as HTMLElement;
+    const shadowRoot = host.attachShadow({ mode: 'open' });
+    shadowRoot.innerHTML = `
+      <section>
+        <slot name="body">The meticulous fallback slot text is visible.</slot>
+      </section>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    expect(shadowRoot.querySelector('slot [data-qianci-word="meticulous"]')).not.toBeNull();
+    app.dispose();
+  });
+
   it('removes existing annotations when a dynamic region becomes ignored', async () => {
     document.body.innerHTML = '<article><section id="widget">The meticulous widget starts as readable.</section></article>';
 
@@ -427,6 +551,98 @@ describe('content compatibility', () => {
 
     expect(bootstrapPanel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
     expect(tailwindPanel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    app.dispose();
+  });
+
+  it('skips screen-reader-only utility text until it becomes visually readable', async () => {
+    document.body.innerHTML = `
+      <article>
+        <p>The unobtrusive article remains readable.</p>
+        <span id="bootstrap-a11y" class="visually-hidden">The meticulous bootstrap label is assistive only.</span>
+        <span id="tailwind-a11y" class="sr-only">The meticulous tailwind label is assistive only.</span>
+      </article>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { unobtrusive: 8100, meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const bootstrapLabel = document.querySelector('#bootstrap-a11y') as HTMLElement;
+    const tailwindLabel = document.querySelector('#tailwind-a11y') as HTMLElement;
+    expect(document.querySelector('p [data-qianci-word="unobtrusive"]')).not.toBeNull();
+    expect(bootstrapLabel.querySelector('[data-qianci-word]')).toBeNull();
+    expect(tailwindLabel.querySelector('[data-qianci-word]')).toBeNull();
+
+    bootstrapLabel.classList.remove('visually-hidden');
+    tailwindLabel.classList.remove('sr-only');
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(bootstrapLabel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(tailwindLabel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    app.dispose();
+  });
+
+  it('skips computed visually hidden regions until they become visible', async () => {
+    document.head.innerHTML = `
+      <style>
+        .css-invisible { visibility: hidden; }
+        .css-transparent { opacity: 0; }
+        .css-content-hidden { content-visibility: hidden; }
+        .css-offscreen { position: absolute; left: -9999px; }
+        .css-clipped {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+        }
+      </style>
+    `;
+    document.body.innerHTML = `
+      <article>
+        <p>The unobtrusive article remains readable.</p>
+        <section id="css-invisible" class="css-invisible">The meticulous invisible panel appears later.</section>
+        <section id="css-transparent" class="css-transparent">The meticulous transparent panel appears later.</section>
+        <section id="css-content-hidden" class="css-content-hidden">The meticulous content hidden panel appears later.</section>
+        <section id="css-offscreen" class="css-offscreen">The meticulous offscreen panel appears later.</section>
+        <section id="css-clipped" class="css-clipped">The meticulous clipped panel appears later.</section>
+      </article>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { unobtrusive: 8100, meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const hiddenPanels = Array.from(document.querySelectorAll<HTMLElement>('section'));
+    expect(document.querySelector('p [data-qianci-word="unobtrusive"]')).not.toBeNull();
+    expect(hiddenPanels.every((panel) => panel.querySelector('[data-qianci-word]') === null)).toBe(true);
+
+    for (const panel of hiddenPanels) {
+      panel.className = '';
+    }
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(hiddenPanels.every((panel) => panel.querySelector('[data-qianci-word="meticulous"]'))).toBe(true);
     app.dispose();
   });
 
@@ -562,6 +778,93 @@ describe('content compatibility', () => {
     await flushScanWork();
 
     expect(panel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    app.dispose();
+  });
+
+  it('skips bootstrap dropdown menus until the show class is added', async () => {
+    document.body.innerHTML = `
+      <article>
+        <div id="dropdown-menu" class="dropdown-menu">
+          <p>The meticulous dropdown option appears later.</p>
+        </div>
+      </article>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const menu = document.querySelector('#dropdown-menu') as HTMLElement;
+    expect(menu.querySelector('[data-qianci-word]')).toBeNull();
+
+    menu.classList.add('show');
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(menu.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+
+    menu.classList.remove('show');
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(menu.querySelector('[data-qianci-word]')).toBeNull();
+    expect(menu.textContent).toContain('The meticulous dropdown option appears later.');
+    app.dispose();
+  });
+
+  it('skips closed native popovers and stateful overlay content until opened', async () => {
+    document.body.innerHTML = `
+      <article>
+        <section id="native-popover" popover>
+          <p>The meticulous native popover appears later.</p>
+        </section>
+        <section id="stateful-popover" role="dialog" data-state="closed" data-side="bottom">
+          <p>The meticulous stateful popover appears later.</p>
+        </section>
+      </article>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const nativePopover = document.querySelector('#native-popover') as HTMLElement;
+    const statefulPopover = document.querySelector('#stateful-popover') as HTMLElement;
+    expect(nativePopover.querySelector('[data-qianci-word]')).toBeNull();
+    expect(statefulPopover.querySelector('[data-qianci-word]')).toBeNull();
+
+    nativePopover.setAttribute('data-state', 'open');
+    statefulPopover.setAttribute('data-state', 'open');
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(nativePopover.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(statefulPopover.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+
+    statefulPopover.setAttribute('data-state', 'closed');
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(statefulPopover.querySelector('[data-qianci-word]')).toBeNull();
+    expect(statefulPopover.textContent).toContain('The meticulous stateful popover appears later.');
     app.dispose();
   });
 
