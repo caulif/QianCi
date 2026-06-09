@@ -30,6 +30,11 @@ export interface BuildDictionaryOptions {
   limit?: number;
 }
 
+export interface DictionaryPackDefinition {
+  id: string;
+  limit: number;
+}
+
 function normalizeTranslation(translation: string): string {
   return translation
     .split(/\r?\n+/)
@@ -121,6 +126,54 @@ export function buildDictionaryPack(rows: DictionarySourceRow[], options: BuildD
   }
 
   return { dictionary, rank, lemma };
+}
+
+function sliceDictionaryPack(pack: DictionaryPack, start: number, end: number): DictionaryPack {
+  const words = Object.keys(pack.dictionary).slice(start, end);
+  const dictionary: Record<string, DictionaryPackEntry> = {};
+  const rank: Record<string, number> = {};
+  const wordSet = new Set(words);
+
+  for (const word of words) {
+    dictionary[word] = pack.dictionary[word];
+    rank[word] = pack.rank[word];
+  }
+
+  const lemma: Record<string, string[]> = {};
+  for (const [form, lemmas] of Object.entries(pack.lemma)) {
+    const filtered = lemmas.filter((word) => wordSet.has(word));
+    if (filtered.length) {
+      lemma[form] = filtered;
+    }
+  }
+
+  return { dictionary, rank, lemma };
+}
+
+/**
+ * 将完整词典切成递进增量包，避免高档包重复包含低档词条。
+ *
+ * @param rows 原始词典行。
+ * @param definitions 按词条上限递增排列的词典包定义。
+ * @returns 以包 id 为键的增量词典包。
+ */
+export function buildDictionaryPacks(
+  rows: DictionarySourceRow[],
+  definitions: DictionaryPackDefinition[]
+): Record<string, DictionaryPack> {
+  const orderedDefinitions = [...definitions].sort((left, right) => left.limit - right.limit);
+  const maxLimit = orderedDefinitions.at(-1)?.limit ?? 0;
+  const fullPack = buildDictionaryPack(rows, { limit: maxLimit });
+  const packs: Record<string, DictionaryPack> = {};
+  let start = 0;
+
+  for (const definition of orderedDefinitions) {
+    const end = Math.min(definition.limit, Object.keys(fullPack.dictionary).length);
+    packs[definition.id] = sliceDictionaryPack(fullPack, start, end);
+    start = end;
+  }
+
+  return packs;
 }
 
 interface CsvColumnMap {
@@ -262,11 +315,21 @@ async function main(): Promise<void> {
   const outputDir = resolve(process.cwd(), args.get('output-dir') ?? 'src/data');
   const limit = Number(args.get('limit') ?? '60000');
   const sourcePath = inputPath ?? resolve(process.cwd(), '.cache/ecdict.csv');
-  const dictionaryPath = join(outputDir, 'dictionary.generated.json');
   const rankPath = join(outputDir, 'rank.generated.json');
+  const dictionaryPackDefinitions: DictionaryPackDefinition[] = [
+    { id: 'core', limit: 9000 },
+    { id: 'extended', limit: 23000 },
+    { id: 'deep', limit: 40000 },
+    { id: 'full', limit }
+  ];
 
   if (!(await fileExists(sourcePath))) {
-    const outputsExist = (await fileExists(dictionaryPath)) && (await fileExists(rankPath));
+    const outputsExist =
+      (await fileExists(rankPath)) &&
+      (await fileExists(join(outputDir, 'dictionary.core.generated.json'))) &&
+      (await fileExists(join(outputDir, 'dictionary.extended.generated.json'))) &&
+      (await fileExists(join(outputDir, 'dictionary.deep.generated.json'))) &&
+      (await fileExists(join(outputDir, 'dictionary.full.generated.json')));
     if (outputsExist) {
       console.log(`Dictionary source not found at ${sourcePath}, reusing generated pack.`);
       return;
@@ -278,10 +341,18 @@ async function main(): Promise<void> {
 
   const rows = await loadSourceRows(sourcePath);
   const pack = buildDictionaryPack(rows, { limit });
+  const dictionaryPacks = buildDictionaryPacks(rows, dictionaryPackDefinitions);
   await mkdir(outputDir, { recursive: true });
-  await writeFile(dictionaryPath, JSON.stringify({ dictionary: pack.dictionary, lemma: pack.lemma }, null, 2), 'utf8');
-  await writeFile(rankPath, JSON.stringify(pack.rank, null, 2), 'utf8');
-  console.log(`Dictionary pack written to ${outputDir} (${Object.keys(pack.dictionary).length} entries).`);
+  await writeFile(rankPath, JSON.stringify(pack.rank), 'utf8');
+  for (const definition of dictionaryPackDefinitions) {
+    const dictionaryPack = dictionaryPacks[definition.id];
+    await writeFile(
+      join(outputDir, `dictionary.${definition.id}.generated.json`),
+      JSON.stringify({ dictionary: dictionaryPack.dictionary, lemma: dictionaryPack.lemma }),
+      'utf8'
+    );
+  }
+  console.log(`Dictionary packs written to ${outputDir} (${Object.keys(pack.dictionary).length} entries).`);
 }
 
 const entryPoint = process.argv[1] ? fileURLToPath(import.meta.url) === process.argv[1] : false;

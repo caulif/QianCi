@@ -12,6 +12,7 @@ export type ManualShortcut = 'alt' | 'ctrl' | 'shift' | 'meta';
 export type LookupFeedbackMode = 'hover' | 'click' | 'selection';
 export type SuppressionMode = 'conservative' | 'balanced' | 'aggressive';
 export type SiteMode = 'auto' | 'manual-only' | 'paused';
+export type OfflineDictionaryTier = 'core' | 'extended' | 'deep' | 'full';
 
 export interface SitePolicy {
   mode: SiteMode;
@@ -43,6 +44,7 @@ export interface UserProfile {
   lookupTrigger: LookupTrigger;
   manualShortcut: ManualShortcut;
   annotationDensity: number;
+  offlineDictionaryTier: OfflineDictionaryTier;
   onboardingDismissedAt?: number;
   feedbackSettings: FeedbackSettings;
   words: Record<string, WordState>;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDictionaryPack, parseDictionaryRowsFromCsv } from '../../scripts/build-dictionary';
+import { buildDictionaryPack, buildDictionaryPacks, parseDictionaryRowsFromCsv } from '../../scripts/build-dictionary';
 
 describe('dictionary pack builder', () => {
   it('parses quoted ECDICT csv rows with embedded newlines', () => {
@@ -50,5 +50,27 @@ meticulous,/məˈtɪkjələs/,,"细致的",,1,,,12000,9200,p:meticulous/d:meticu
     });
     expect(pack.rank.coherence).toBe(7800);
     expect(pack.lemma.abrupt).toEqual(['abrupt']);
+  });
+
+  it('splits dictionary entries into ordered offline packs without duplicating earlier words', () => {
+    const rows = [
+      { word: 'alpha', phonetic: '/a/', translation: '甲', frq: 100, bnc: 100, exchange: '' },
+      { word: 'bravo', phonetic: '/b/', translation: '乙', frq: 200, bnc: 200, exchange: '' },
+      { word: 'charlie', phonetic: '/c/', translation: '丙', frq: 300, bnc: 300, exchange: '' },
+      { word: 'delta', phonetic: '/d/', translation: '丁', frq: 400, bnc: 400, exchange: '' },
+      { word: 'echo', phonetic: '/e/', translation: '戊', frq: 500, bnc: 500, exchange: '' }
+    ];
+
+    const packs = buildDictionaryPacks(rows, [
+      { id: 'core', limit: 2 },
+      { id: 'extended', limit: 4 },
+      { id: 'full', limit: 10 }
+    ]);
+
+    expect(Object.keys(packs.core.dictionary)).toEqual(['alpha', 'bravo']);
+    expect(Object.keys(packs.extended.dictionary)).toEqual(['charlie', 'delta']);
+    expect(Object.keys(packs.full.dictionary)).toEqual(['echo']);
+    expect(packs.extended.lemma.charlie).toEqual(['charlie']);
+    expect(packs.full.lemma.alpha).toBeUndefined();
   });
 });

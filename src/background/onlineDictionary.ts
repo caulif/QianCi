@@ -32,6 +32,10 @@ interface MyMemoryResponse {
   };
 }
 
+interface LingvaResponse {
+  translation?: string;
+}
+
 interface DictionaryApiDevPhonetic {
   text?: string;
 }
@@ -60,8 +64,17 @@ const ONLINE_RANK = 999999;
 const FREE_DICTIONARY_ENDPOINT = 'https://freedictionaryapi.com/api/v1/entries/en';
 const DICTIONARY_API_DEV_ENDPOINT = 'https://api.dictionaryapi.dev/api/v2/entries/en';
 const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get';
+const LINGVA_ENDPOINT = 'https://lingva.ml/api/v1/en/zh';
 const MYMEMORY_SERVICE = { label: 'MyMemory', url: 'https://mymemory.translated.net/' };
+const LINGVA_SERVICE = { label: 'Lingva Translate', url: 'https://lingva.ml/' };
 const DEFAULT_LOOKUP_TIMEOUT_MS = 8000;
+
+type TranslationService = typeof MYMEMORY_SERVICE | typeof LINGVA_SERVICE;
+
+interface TranslationResult {
+  text: string;
+  service: TranslationService;
+}
 
 class OnlineLookupFailure extends Error {
   readonly errorKind: OnlineLookupErrorKind;
@@ -266,6 +279,28 @@ async function translateDefinitionToChinese(
   definition: string,
   fetchImpl: typeof fetch,
   timeoutMs: number
+): Promise<TranslationResult> {
+  try {
+    const translatedText = await translateDefinitionWithMyMemory(definition, fetchImpl, timeoutMs);
+    if (translatedText) {
+      return { text: translatedText, service: MYMEMORY_SERVICE };
+    }
+  } catch {
+    // MyMemory 是默认无账号翻译源；失败后继续尝试 Lingva 兜底。
+  }
+
+  const translatedText = await translateDefinitionWithLingva(definition, fetchImpl, timeoutMs);
+  if (!translatedText) {
+    throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
+  }
+
+  return { text: translatedText, service: LINGVA_SERVICE };
+}
+
+async function translateDefinitionWithMyMemory(
+  definition: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number
 ): Promise<string> {
   const url = `${MYMEMORY_ENDPOINT}?q=${encodeURIComponent(definition)}&langpair=en|zh-CN`;
   const response = await fetchWithTimeout(url, fetchImpl, timeoutMs);
@@ -275,6 +310,21 @@ async function translateDefinitionToChinese(
 
   const payload = await readJsonResponse<MyMemoryResponse>(response);
   return payload.responseData?.translatedText?.trim() ?? '';
+}
+
+async function translateDefinitionWithLingva(
+  definition: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number
+): Promise<string> {
+  const url = `${LINGVA_ENDPOINT}/${encodeURIComponent(definition)}`;
+  const response = await fetchWithTimeout(url, fetchImpl, timeoutMs);
+  if (!response.ok) {
+    throw createHttpFailure(response.status);
+  }
+
+  const payload = await readJsonResponse<LingvaResponse>(response);
+  return payload.translation?.trim() ?? '';
 }
 
 async function fetchFreeDictionaryEntry(
@@ -302,9 +352,9 @@ async function fetchFreeDictionaryEntry(
     throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
   }
 
-  let translated = '';
+  let translationResult: TranslationResult;
   try {
-    translated = await translateDefinitionToChinese(definition, fetchImpl, timeoutMs);
+    translationResult = await translateDefinitionToChinese(definition, fetchImpl, timeoutMs);
   } catch (error) {
     if (error instanceof OnlineLookupFailure) {
       throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
@@ -312,7 +362,7 @@ async function fetchFreeDictionaryEntry(
     throw error;
   }
 
-  entry = buildOnlineDictionaryEntry(normalized, payload, translated, MYMEMORY_SERVICE);
+  entry = buildOnlineDictionaryEntry(normalized, payload, translationResult.text, translationResult.service);
   if (!entry) {
     throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
   }
@@ -344,9 +394,9 @@ async function fetchDictionaryApiDevEntry(
     throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
   }
 
-  let translated = '';
+  let translationResult: TranslationResult;
   try {
-    translated = await translateDefinitionToChinese(definition, fetchImpl, timeoutMs);
+    translationResult = await translateDefinitionToChinese(definition, fetchImpl, timeoutMs);
   } catch (error) {
     if (error instanceof OnlineLookupFailure) {
       throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
@@ -354,7 +404,7 @@ async function fetchDictionaryApiDevEntry(
     throw error;
   }
 
-  const entry = buildDictionaryApiDevEntry(normalized, payload, translated, MYMEMORY_SERVICE);
+  const entry = buildDictionaryApiDevEntry(normalized, payload, translationResult.text, translationResult.service);
   if (!entry) {
     throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
   }

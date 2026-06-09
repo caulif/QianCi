@@ -104,4 +104,56 @@ describe('content compatibility accessible names', () => {
     expect(label.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
     app.dispose();
   });
+
+  it('handles multiple idrefs, errormessage, shared descriptions, and target switching', async () => {
+    document.body.innerHTML = `
+      <main>
+        <button id="multi-action" aria-labelledby="primary-label secondary-label"></button>
+        <span id="primary-label">The meticulous primary label should stay untouched.</span>
+        <span id="secondary-label">The meticulous secondary label should stay untouched.</span>
+        <input id="field-one" aria-describedby="shared-hint" aria-errormessage="field-error">
+        <input id="field-two" aria-describedby="shared-hint">
+        <p id="shared-hint">The meticulous shared hint should stay untouched.</p>
+        <p id="field-error">The meticulous field error should stay untouched.</p>
+        <p id="new-label">The meticulous new label starts as readable prose.</p>
+      </main>
+    `;
+
+    const app = createCompatibilityApp();
+    app.rescan();
+    await flushScanWork();
+
+    const action = document.querySelector('#multi-action') as HTMLElement;
+    const fieldOne = document.querySelector('#field-one') as HTMLElement;
+    const fieldTwo = document.querySelector('#field-two') as HTMLElement;
+    const primaryLabel = document.querySelector('#primary-label') as HTMLElement;
+    const secondaryLabel = document.querySelector('#secondary-label') as HTMLElement;
+    const sharedHint = document.querySelector('#shared-hint') as HTMLElement;
+    const fieldError = document.querySelector('#field-error') as HTMLElement;
+    const newLabel = document.querySelector('#new-label') as HTMLElement;
+    expect(primaryLabel.querySelector('[data-qianci-word]')).toBeNull();
+    expect(secondaryLabel.querySelector('[data-qianci-word]')).toBeNull();
+    expect(sharedHint.querySelector('[data-qianci-word]')).toBeNull();
+    expect(fieldError.querySelector('[data-qianci-word]')).toBeNull();
+    expect(newLabel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+
+    action.setAttribute('aria-labelledby', 'new-label');
+    fieldOne.removeAttribute('aria-errormessage');
+    fieldOne.removeAttribute('aria-describedby');
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(primaryLabel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(secondaryLabel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(newLabel.querySelector('[data-qianci-word]')).toBeNull();
+    expect(fieldError.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(sharedHint.querySelector('[data-qianci-word]')).toBeNull();
+
+    fieldTwo.removeAttribute('aria-describedby');
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(sharedHint.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    app.dispose();
+  });
 });

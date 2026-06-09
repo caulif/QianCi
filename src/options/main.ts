@@ -16,10 +16,16 @@ import {
   unmarkWordAlwaysAnnotate,
   UNDERLINE_TONES
 } from '../core/profile';
+import {
+  DEFAULT_OFFLINE_DICTIONARY_TIER,
+  OFFLINE_DICTIONARY_PACK_OPTIONS,
+  normalizeOfflineDictionaryTier
+} from '../core/dictionaryPacks';
 import type {
   FeedbackSettings,
   LookupTrigger,
   ManualShortcut,
+  OfflineDictionaryTier,
   SitePolicies,
   SuppressionMode,
   UnderlineTone,
@@ -42,6 +48,7 @@ export interface OptionsState {
   underlineTone: UnderlineTone;
   lookupTrigger: LookupTrigger;
   manualShortcut: ManualShortcut;
+  offlineDictionaryTier?: OfflineDictionaryTier;
   annotationDensity?: number;
   onboardingDismissedAt?: number;
   feedbackSettings?: FeedbackSettings;
@@ -62,6 +69,7 @@ interface OptionsHandlers {
   onToneChange?: (tone: UnderlineTone) => void | Promise<void>;
   onLookupTriggerChange?: (trigger: LookupTrigger) => void | Promise<void>;
   onManualShortcutChange?: (shortcut: ManualShortcut) => void | Promise<void>;
+  onOfflineDictionaryTierChange?: (tier: OfflineDictionaryTier) => void | Promise<void>;
   onAnnotationDensityChange?: (density: number) => void | Promise<void>;
   onDismissOnboarding?: () => void | Promise<void>;
   onReopenOnboarding?: () => void | Promise<void>;
@@ -664,6 +672,9 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   const searchQuery = state.searchQuery?.trim().toLowerCase() ?? '';
   const feedbackSettings = state.feedbackSettings ?? DEFAULT_FEEDBACK_SETTINGS;
   const annotationDensity = normalizeAnnotationDensity(state.annotationDensity ?? DEFAULT_ANNOTATION_DENSITY);
+  const offlineDictionaryTier = normalizeOfflineDictionaryTier(
+    state.offlineDictionaryTier ?? DEFAULT_OFFLINE_DICTIONARY_TIER
+  );
   const matchesQuery = (word: string, translation = '') =>
     !searchQuery || `${word} ${translation}`.toLowerCase().includes(searchQuery);
   const filteredVocab = state.vocab.filter((item) => matchesQuery(item.word, item.translation));
@@ -778,6 +789,51 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   densityRow.append(densitySlider, densityBadge);
   densityPanel.append(densityRow, densityMeta);
   shell.append(densityPanel);
+
+  const dictionaryPanel = document.createElement('section');
+  dictionaryPanel.className = 'panel dictionary-pack-panel';
+
+  const dictionaryTitle = document.createElement('div');
+  dictionaryTitle.className = 'panel-title';
+  dictionaryTitle.textContent = '离线词库';
+  dictionaryPanel.append(dictionaryTitle);
+
+  const dictionaryCopy = document.createElement('p');
+  dictionaryCopy.className = 'panel-copy';
+  dictionaryCopy.textContent = '进阶包默认加载；想更轻或更全，可以按自己的阅读场景调整。';
+  dictionaryPanel.append(dictionaryCopy);
+
+  const dictionaryChoices = document.createElement('div');
+  dictionaryChoices.className = 'dictionary-pack-grid';
+
+  for (const option of OFFLINE_DICTIONARY_PACK_OPTIONS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'dictionary-pack-button';
+    button.dataset.qianciOfflineDictionaryTier = option.tier;
+    button.setAttribute('aria-pressed', String(offlineDictionaryTier === option.tier));
+
+    const label = document.createElement('strong');
+    label.textContent = option.label;
+    button.append(label);
+
+    const meta = document.createElement('span');
+    meta.textContent = `约 ${option.entries.toLocaleString()} 词`;
+    button.append(meta);
+
+    const description = document.createElement('small');
+    description.textContent = option.description;
+    button.append(description);
+
+    button.addEventListener('click', () => {
+      void handlers.onOfflineDictionaryTierChange?.(option.tier);
+    });
+
+    dictionaryChoices.append(button);
+  }
+
+  dictionaryPanel.append(dictionaryChoices);
+  shell.append(dictionaryPanel);
 
   const feedbackPanel = document.createElement('section');
   feedbackPanel.className = 'panel feedback-panel';
@@ -1193,6 +1249,7 @@ export async function mountOptionsApp(root: HTMLElement, store = createDefaultSt
         underlineTone: profile.underlineTone,
         lookupTrigger: profile.lookupTrigger,
         manualShortcut: profile.manualShortcut,
+        offlineDictionaryTier: profile.offlineDictionaryTier,
         annotationDensity: profile.annotationDensity,
         onboardingDismissedAt: profile.onboardingDismissedAt,
         feedbackSettings: profile.feedbackSettings,
@@ -1225,6 +1282,11 @@ export async function mountOptionsApp(root: HTMLElement, store = createDefaultSt
         },
         onManualShortcutChange: async (shortcut) => {
           profile = { ...profile, manualShortcut: shortcut };
+          await saveProfile(store, profile);
+          render();
+        },
+        onOfflineDictionaryTierChange: async (tier) => {
+          profile = { ...profile, offlineDictionaryTier: normalizeOfflineDictionaryTier(tier) };
           await saveProfile(store, profile);
           render();
         },

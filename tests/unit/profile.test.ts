@@ -19,6 +19,7 @@ describe('profile feedback', () => {
     expect(profile.lookupTrigger).toBe('hover');
     expect(profile.manualShortcut).toBe('alt');
     expect(profile.annotationDensity).toBe(1);
+    expect(profile.offlineDictionaryTier).toBe('extended');
     expect(profile.onboardingDismissedAt).toBeUndefined();
     expect(profile.feedbackSettings).toEqual({
       skipLimit: 3,
@@ -40,6 +41,7 @@ describe('profile feedback', () => {
     expect(normalized.feedbackSettings.suppressionMode).toBe('balanced');
     expect(normalized.annotationDensity).toBe(1);
     expect(normalized.onboardingDismissedAt).toBeUndefined();
+    expect(normalized.offlineDictionaryTier).toBe('extended');
   });
 
   it('repairs invalid annotation density from damaged storage data', () => {

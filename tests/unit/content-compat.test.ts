@@ -156,6 +156,53 @@ describe('content compatibility', () => {
     app.dispose();
   });
 
+  it('cleans and restores annotations when hidden attributes change dynamically', async () => {
+    document.body.innerHTML = `
+      <article>
+        <section id="hidden-panel" hidden>The meticulous hidden panel appears later.</section>
+        <section id="inert-panel" inert>The meticulous inert panel appears later.</section>
+        <section id="aria-panel" aria-hidden="true">The meticulous aria hidden panel appears later.</section>
+        <section id="visible-panel">The meticulous visible panel becomes hidden.</section>
+      </article>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const hiddenPanel = document.querySelector('#hidden-panel') as HTMLElement;
+    const inertPanel = document.querySelector('#inert-panel') as HTMLElement;
+    const ariaPanel = document.querySelector('#aria-panel') as HTMLElement;
+    const visiblePanel = document.querySelector('#visible-panel') as HTMLElement;
+    expect(hiddenPanel.querySelector('[data-qianci-word]')).toBeNull();
+    expect(inertPanel.querySelector('[data-qianci-word]')).toBeNull();
+    expect(ariaPanel.querySelector('[data-qianci-word]')).toBeNull();
+    expect(visiblePanel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+
+    hiddenPanel.removeAttribute('hidden');
+    inertPanel.removeAttribute('inert');
+    ariaPanel.removeAttribute('aria-hidden');
+    visiblePanel.setAttribute('hidden', '');
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(hiddenPanel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(inertPanel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(ariaPanel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(visiblePanel.querySelector('[data-qianci-word]')).toBeNull();
+    expect(visiblePanel.textContent).toBe('The meticulous visible panel becomes hidden.');
+    app.dispose();
+  });
+
   it('skips navigation and page footer landmarks while annotating article content', async () => {
     document.body.innerHTML = `
       <nav>The meticulous navigation menu should stay untouched.</nav>

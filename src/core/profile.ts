@@ -9,6 +9,7 @@ import type {
   UserProfile,
   WordState
 } from './types';
+import { DEFAULT_OFFLINE_DICTIONARY_TIER, normalizeOfflineDictionaryTier } from './dictionaryPacks';
 
 const MIN_LEVEL = 1;
 const MAX_LEVEL = 6;
@@ -159,6 +160,7 @@ export function createProfile(level: UserLevel): UserProfile {
     lookupTrigger: 'hover',
     manualShortcut: 'alt',
     annotationDensity: DEFAULT_ANNOTATION_DENSITY,
+    offlineDictionaryTier: DEFAULT_OFFLINE_DICTIONARY_TIER,
     feedbackSettings: DEFAULT_FEEDBACK_SETTINGS,
     words: {}
   };
@@ -182,6 +184,7 @@ export function normalizeProfile(profile: Partial<UserProfile>): UserProfile {
     lookupTrigger: profile.lookupTrigger ?? fallback.lookupTrigger,
     manualShortcut: profile.manualShortcut ?? fallback.manualShortcut,
     annotationDensity: normalizeAnnotationDensity(profile.annotationDensity),
+    offlineDictionaryTier: normalizeOfflineDictionaryTier(profile.offlineDictionaryTier),
     onboardingDismissedAt: normalizeOptionalTimestamp(profile.onboardingDismissedAt),
     feedbackSettings: normalizeFeedbackSettings(profile.feedbackSettings),
     words: profile.words ?? {}

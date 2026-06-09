@@ -30,6 +30,7 @@
 
 - FreeDictionaryAPI
 - MyMemory Translation API
+- Lingva Translate（仅在 MyMemory 暂不可用时作为翻译回退）
 
 发送内容只包含完成查词所需的最小文本，例如：
 

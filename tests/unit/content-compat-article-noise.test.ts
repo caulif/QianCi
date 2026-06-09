@@ -85,4 +85,46 @@ describe('content compatibility article noise regions', () => {
     expect(document.querySelector('[role="complementary"] [data-qianci-word]')).toBeNull();
     app.dispose();
   });
+
+  it('skips article metadata, table of contents, sharing, ads, and related cards', async () => {
+    document.body.innerHTML = `
+      <main>
+        <article>
+          <header class="article-meta">
+            <p class="byline">The meticulous author biography should stay untouched.</p>
+            <time datetime="2026-06-09">The meticulous publication date should stay untouched.</time>
+          </header>
+          <nav class="toc">The meticulous table of contents should stay untouched.</nav>
+          <p>The meticulous article paragraph remains readable.</p>
+          <aside class="share-bar">The meticulous share action should stay untouched.</aside>
+          <div class="advertisement">The meticulous sponsor copy should stay untouched.</div>
+          <section class="related-posts">The meticulous related story should stay untouched.</section>
+          <footer class="tags">The meticulous topic tags should stay untouched.</footer>
+        </article>
+      </main>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    expect(document.querySelector('article > p [data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(document.querySelector('.article-meta [data-qianci-word]')).toBeNull();
+    expect(document.querySelector('time [data-qianci-word]')).toBeNull();
+    expect(document.querySelector('.toc [data-qianci-word]')).toBeNull();
+    expect(document.querySelector('.share-bar [data-qianci-word]')).toBeNull();
+    expect(document.querySelector('.advertisement [data-qianci-word]')).toBeNull();
+    expect(document.querySelector('.related-posts [data-qianci-word]')).toBeNull();
+    expect(document.querySelector('.tags [data-qianci-word]')).toBeNull();
+    app.dispose();
+  });
 });

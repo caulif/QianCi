@@ -92,7 +92,8 @@ describe('online dictionary parser', () => {
           ]
         })
       )
-      .mockResolvedValueOnce(createJsonResponse(503, { message: 'translation unavailable' }));
+      .mockResolvedValueOnce(createJsonResponse(503, { message: 'translation unavailable' }))
+      .mockResolvedValueOnce(createJsonResponse(503, { message: 'fallback translation unavailable' }));
 
     const result = await fetchOnlineDictionaryEntry('serendipity', fetchMock as never);
 
@@ -101,6 +102,44 @@ describe('online dictionary parser', () => {
       errorKind: 'not_found',
       message: '在线词典暂无中文释义'
     });
+  });
+
+  it('falls back to Lingva when MyMemory cannot translate a definition', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonResponse(200, {
+          word: 'serendipity',
+          entries: [
+            {
+              pronunciations: [{ type: 'ipa', text: '/ˌserənˈdɪpəti/' }],
+              senses: [{ definition: 'The phenomenon of making an unplanned fortunate discovery.' }]
+            }
+          ]
+        })
+      )
+      .mockResolvedValueOnce(createJsonResponse(503, { message: 'translation unavailable' }))
+      .mockResolvedValueOnce(
+        createJsonResponse(200, {
+          translation: '意外幸运发现的现象'
+        })
+      );
+
+    const result = await fetchOnlineDictionaryEntry('serendipity', fetchMock as never);
+
+    expect(result.ok).toBe(true);
+    expect(result.entry).toEqual(
+      expect.objectContaining({
+        word: 'serendipity',
+        translation: '意外幸运发现的现象',
+        attribution: expect.objectContaining({
+          translationServiceLabel: 'Lingva Translate',
+          translationServiceUrl: 'https://lingva.ml/'
+        })
+      })
+    );
+    expect(fetchMock.mock.calls[1][0]).toContain('api.mymemory.translated.net');
+    expect(fetchMock.mock.calls[2][0]).toContain('lingva.ml');
   });
 
   it('tries dictionaryapi.dev when the primary dictionary provider is unavailable', async () => {

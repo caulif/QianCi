@@ -7,12 +7,13 @@ import {
 } from '../core/messages';
 import type { DictionaryEntry } from '../core/dictionaryEntry';
 import { createContentApp } from './app';
-import { createLazyDictionaryResolver, type RuntimeDictionaryPack } from './dictionary';
+import { createTieredDictionaryResolver, type RuntimeDictionaryPack } from './dictionary';
 import { createChromeStorageAdapter } from '../storage/browserAdapter';
 import { loadProfile, saveProfile } from '../storage/profileStore';
 import { createProfile } from '../core/profile';
 import type { LookupFeedbackMode, UserProfile } from '../core/types';
 import { getSiteModeForUrl } from '../core/sitePolicy';
+import { OFFLINE_DICTIONARY_PACK_OPTIONS, normalizeOfflineDictionaryTier } from '../core/dictionaryPacks';
 import {
   loadCustomDictionary,
   saveCustomDictionary,
@@ -39,20 +40,31 @@ async function bootstrap(): Promise<void> {
   const profilePersistence = createProfilePersistenceQueue(async (nextProfile) => {
     await saveProfile(store, nextProfile);
   });
-  const dictionaryUrl = new URL('../data/dictionary.generated.json', import.meta.url).href;
+  const dictionaryUrls = {
+    core: new URL('../data/dictionary.core.generated.json', import.meta.url).href,
+    extended: new URL('../data/dictionary.extended.generated.json', import.meta.url).href,
+    deep: new URL('../data/dictionary.deep.generated.json', import.meta.url).href,
+    full: new URL('../data/dictionary.full.generated.json', import.meta.url).href
+  } as const;
   const rankIndexUrl = new URL('../data/rank.generated.json', import.meta.url).href;
   const rankResponse = await fetch(rankIndexUrl);
   if (!rankResponse.ok) {
     throw new Error(`Failed to load rank index: ${rankResponse.status}`);
   }
   const ranks = (await rankResponse.json()) as RuntimeRankIndex;
-  const bundledDictionary = createLazyDictionaryResolver(async () => {
-    const response = await fetch(dictionaryUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to load dictionary pack: ${response.status}`);
-    }
-    return (await response.json()) as RuntimeDictionaryPack;
-  });
+  const bundledDictionary = createTieredDictionaryResolver(
+    OFFLINE_DICTIONARY_PACK_OPTIONS.map((option) => ({
+      tier: option.tier,
+      loadPack: async () => {
+        const response = await fetch(dictionaryUrls[option.tier]);
+        if (!response.ok) {
+          throw new Error(`Failed to load dictionary ${option.tier} pack: ${response.status}`);
+        }
+        return (await response.json()) as RuntimeDictionaryPack;
+      }
+    })),
+    () => normalizeOfflineDictionaryTier(profile.offlineDictionaryTier)
+  );
 
   const resolveEntry = async (word: string): Promise<DictionaryEntry | undefined> => {
     const normalized = word.trim().toLowerCase();

@@ -199,6 +199,7 @@ docs/
 - 联网补查当前使用：
   - [FreeDictionaryAPI](https://freedictionaryapi.com/)
   - [MyMemory Translation API](https://mymemory.translated.net/)
+  - [Lingva Translate](https://lingva.ml/)（当 MyMemory 暂不可用时作为翻译回退）
 
 ## 隐私说明
 

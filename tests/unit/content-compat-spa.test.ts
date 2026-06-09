@@ -87,4 +87,52 @@ describe('content compatibility spa routes', () => {
     expect(document.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
     app.dispose();
   });
+
+  it('keeps annotations unique through rapid history route replacements', async () => {
+    document.body.innerHTML = '<main id="app-root"><article><p>The unobtrusive first route is readable.</p></article></main>';
+    const dictionary = {
+      unobtrusive: { word: 'unobtrusive', phonetic: '/x/', translation: '不显眼的', rank: 8100 },
+      meticulous: { word: 'meticulous', phonetic: '/x/', translation: '细致的', rank: 9200 },
+      ubiquitous: { word: 'ubiquitous', phonetic: '/x/', translation: '无处不在的', rank: 9300 }
+    };
+
+    const app = createContentApp(document, {
+      profile: { ...createProfile('starter'), lookupTrigger: 'click' },
+      ranks: { unobtrusive: 8100, meticulous: 9200, ubiquitous: 9300 },
+      resolveEntry: createResolver(dictionary),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const root = document.querySelector('#app-root') as HTMLElement;
+    const firstRouteWord = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
+    firstRouteWord.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    await Promise.resolve();
+    expect(visibleTooltipText()).toContain('不显眼的');
+
+    history.pushState({}, '', '/second');
+    root.innerHTML = '<article><p>The meticulous second route is readable.</p></article>';
+    history.replaceState({}, '', '/third');
+    root.innerHTML = '<article><p>The ubiquitous third route is readable.</p></article>';
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(visibleTooltipText()).toBe('');
+    expect(document.querySelector('[data-qianci-word="unobtrusive"]')).toBeNull();
+    expect(document.querySelector('[data-qianci-word="meticulous"]')).toBeNull();
+    expect(document.querySelectorAll('[data-qianci-word="ubiquitous"]')).toHaveLength(1);
+
+    history.pushState({}, '', '/second-again');
+    root.innerHTML = '<article><p>The meticulous second route is readable again.</p></article>';
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(document.querySelector('[data-qianci-word="ubiquitous"]')).toBeNull();
+    expect(document.querySelectorAll('[data-qianci-word="meticulous"]')).toHaveLength(1);
+    app.dispose();
+  });
 });

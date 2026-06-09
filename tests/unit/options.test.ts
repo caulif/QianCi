@@ -41,6 +41,11 @@ describe('options page', () => {
     expect(root.textContent).toContain('平衡');
     expect(root.textContent).toContain('想少打扰就往左，想多提醒就往右。');
     expect(root.textContent).toContain('标注策略');
+    expect(root.textContent).toContain('离线词库');
+    expect(root.textContent).toContain('基础');
+    expect(root.textContent).toContain('进阶');
+    expect(root.textContent).toContain('深度');
+    expect(root.textContent).toContain('完整');
     expect(root.textContent).toContain('被跳过隐藏');
     expect(root.textContent).toContain('abrupt');
     expect(root.textContent).toContain('熟词');
@@ -54,6 +59,7 @@ describe('options page', () => {
     expect(root.querySelectorAll('[data-qianci-tone]')).toHaveLength(5);
     expect(root.querySelectorAll('[data-qianci-lookup-trigger]')).toHaveLength(2);
     expect(root.querySelectorAll('[data-qianci-manual-shortcut]')).toHaveLength(4);
+    expect(root.querySelectorAll('[data-qianci-offline-dictionary-tier]')).toHaveLength(4);
     expect(root.querySelectorAll('.vocab-table tbody')[0]?.querySelectorAll('tr')).toHaveLength(2);
   });
 
@@ -377,6 +383,25 @@ describe('options page', () => {
 
     expect((await loadProfile(store))?.annotationDensity).toBe(1.25);
     expect(root.textContent).toContain('多标一些');
+  });
+
+  it('persists the selected offline dictionary tier from the settings page', async () => {
+    const root = document.createElement('div');
+    const store = createMemoryStore({
+      'qianci.profile': createProfile('cet4')
+    });
+
+    await mountOptionsApp(root, store);
+
+    const fullButton = root.querySelector<HTMLButtonElement>('[data-qianci-offline-dictionary-tier="full"]');
+    expect(fullButton).not.toBeNull();
+    fullButton?.click();
+    await Promise.resolve();
+
+    expect((await loadProfile(store))?.offlineDictionaryTier).toBe('full');
+    expect(root.querySelector('[data-qianci-offline-dictionary-tier="full"]')?.getAttribute('aria-pressed')).toBe(
+      'true'
+    );
   });
 
   it('shows first-run guidance and lets users dismiss it', async () => {
