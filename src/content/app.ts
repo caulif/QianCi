@@ -11,6 +11,7 @@ import {
 import type { LookupFeedbackMode, LookupTrigger, ManualShortcut, SiteMode, UserProfile } from '../core/types';
 import { createAnnotatedFragment } from './annotator';
 import {
+  ariaReferenceTargetsFromMutation,
   hasActiveTextSelection,
   removeAnnotationsInRoot,
   removeAnnotationElement,
@@ -22,6 +23,7 @@ import {
 import type { RectLike } from './placement';
 import { normalizeSelectedWord } from './selection';
 import { createTooltipController } from './tooltip';
+import { containsQianciAnnotation } from './mutationCompatibility';
 
 export interface ContentServices {
   profile: UserProfile;
@@ -789,6 +791,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
 
     observer.observe(root, {
       attributes: true,
+      attributeOldValue: true,
       childList: true,
       characterData: true,
       subtree: true
@@ -950,22 +953,6 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     slotEventRoots.length = 0;
   }
 
-  /**
-   * Detects mutations caused by QianCi's own annotation spans.
-   *
-   * @param nodes Added DOM nodes from a mutation record.
-   * @returns True when this mutation should not trigger another page scan.
-   */
-  function containsOwnAnnotation(nodes: Node[]): boolean {
-    return nodes.some((node) => {
-      if (!(node instanceof HTMLElement)) {
-        return false;
-      }
-
-      return Boolean(node.dataset.qianciWord) || Boolean(node.querySelector('[data-qianci-word]'));
-    });
-  }
-
   doc.addEventListener('mouseup', handleManualSelection);
   observer = new MutationObserver((mutations) => {
     if (disposed) {
@@ -980,6 +967,14 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
             removeAnnotationsInRoot(target);
           } else {
             scheduleScan(target);
+          }
+
+          for (const referenceTarget of ariaReferenceTargetsFromMutation(target, mutation.attributeName, mutation.oldValue)) {
+            if (shouldCleanAnnotatedRoot(referenceTarget)) {
+              removeAnnotationsInRoot(referenceTarget);
+            } else {
+              scheduleScan(referenceTarget);
+            }
           }
 
           const controlledIds = (target.getAttribute('aria-controls') ?? '').split(/\s+/).filter(Boolean);
@@ -1012,8 +1007,13 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
         continue;
       }
 
+      const removedNodes = Array.from(mutation.removedNodes);
+      if (containsQianciAnnotation(removedNodes, { includeSelf: false })) {
+        tooltip.hide();
+      }
+
       const addedNodes = Array.from(mutation.addedNodes);
-      if (containsOwnAnnotation(addedNodes)) {
+      if (containsQianciAnnotation(addedNodes)) {
         continue;
       }
 

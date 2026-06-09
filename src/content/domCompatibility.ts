@@ -4,6 +4,8 @@ export const SKIP_SELECTOR = [
   'noscript',
   'nav',
   '[role="navigation"]',
+  'aside',
+  '[role="complementary"]',
   'body > footer',
   '[role="contentinfo"]',
   'textarea',
@@ -11,12 +13,17 @@ export const SKIP_SELECTOR = [
   'select',
   'button',
   'option',
+  'progress',
+  'meter',
   'svg',
   'math',
+  'mjx-container',
   'canvas',
   'audio',
   'video',
   'iframe',
+  'rt',
+  'rp',
   'summary',
   'label',
   'code',
@@ -24,10 +31,18 @@ export const SKIP_SELECTOR = [
   '[hidden]',
   '[inert]',
   '[aria-hidden="true"]',
+  '[aria-busy="true"]',
   '[aria-live]:not([aria-live="off"])',
   '[role="status"]',
   '[role="alert"]',
   '[role="log"]',
+  '[role="progressbar"]',
+  '[role="toolbar"]',
+  '[role="menu"]',
+  '[role="menubar"]',
+  '[role="tree"]',
+  '[role="treeitem"]',
+  '[role="grid"]',
   '[role="textbox"]',
   '[role="button"]',
   '[role="link"]',
@@ -42,9 +57,17 @@ export const SKIP_SELECTOR = [
   '[role="listbox"]',
   '[role="searchbox"]',
   '[contenteditable]:not([contenteditable="false"])',
+  '[translate="no"]',
   '.monaco-editor',
   '.cm-editor',
   '.CodeMirror',
+  '.MathJax',
+  '.katex',
+  '.notranslate',
+  '.infobox',
+  '.navbox',
+  '.reflist',
+  '.reference',
   '.qianci-ignore',
   '[data-qianci-ignore]',
   '[data-qianci-tooltip]',
@@ -75,7 +98,9 @@ export function shouldSkipTextNode(text: Text): boolean {
     hasClosedNativePopoverAncestor(parent) ||
     hasClosedStatefulOverlayAncestor(parent) ||
     hasInactiveAriaTabPanelAncestor(parent) ||
-    hasBootstrapInactiveTabPaneAncestor(parent)
+    hasBootstrapInactiveTabPaneAncestor(parent) ||
+    hasAccessibleReferenceAncestor(parent) ||
+    hasInteractiveSurfaceAncestor(parent)
   );
 }
 
@@ -139,6 +164,168 @@ function assignedSlotOf(node: Element): HTMLSlotElement | null {
 }
 
 /**
+ * Checks text used as the external accessible name or description of controls.
+ *
+ * @param element Element that owns a text node.
+ * @returns True when a control references this subtree via an ARIA idref.
+ */
+export function hasAccessibleReferenceAncestor(element: HTMLElement): boolean {
+  for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+    if (!current.id || !isReferencedByInteractiveSurface(current)) {
+      continue;
+    }
+
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Finds referenced text targets affected by an ARIA idref attribute mutation.
+ *
+ * @param element Element whose ARIA reference attribute changed.
+ * @param attributeName Mutated attribute name from MutationObserver.
+ * @param previousValue Previous attribute value when available.
+ * @returns Referenced elements that may need cleanup or rescan.
+ */
+export function ariaReferenceTargetsFromMutation(
+  element: HTMLElement,
+  attributeName: string | null,
+  previousValue: string | null
+): HTMLElement[] {
+  if (!attributeName || !ARIA_REFERENCE_ATTRIBUTES.includes(attributeName)) {
+    return [];
+  }
+
+  const ids = new Set([...idrefTokens(previousValue ?? ''), ...idrefTokens(element.getAttribute(attributeName) ?? '')]);
+  return Array.from(ids)
+    .map((id) => element.ownerDocument.getElementById(id))
+    .filter((target): target is HTMLElement => target instanceof HTMLElement);
+}
+
+/**
+ * Checks whether a node is referenced by a nearby interactive element.
+ *
+ * @param target Referenced element with a stable id.
+ * @returns True when an interactive owner uses the target in an ARIA idref list.
+ */
+function isReferencedByInteractiveSurface(target: HTMLElement): boolean {
+  const owners = Array.from(
+    target.ownerDocument.querySelectorAll<HTMLElement>('[aria-labelledby], [aria-describedby], [aria-errormessage]')
+  );
+  return owners.some((owner) => owner !== target && isInteractiveReferenceOwner(owner) && referencesElementId(owner, target.id));
+}
+
+/**
+ * Checks whether an ARIA reference owner behaves like a control or widget.
+ *
+ * @param element Element with ARIA idrefs.
+ * @returns True when rewriting referenced text could change a control name or description.
+ */
+function isInteractiveReferenceOwner(element: HTMLElement): boolean {
+  return Boolean(
+    element.matches(
+      [
+        'a[href]',
+        'button',
+        'input',
+        'select',
+        'textarea',
+        'summary',
+        '[contenteditable]:not([contenteditable="false"])',
+        '[tabindex]',
+        '[role]'
+      ].join(',')
+    ) || element.hasAttribute('onclick')
+  );
+}
+
+/**
+ * Checks whether any supported ARIA idref attribute includes a target id.
+ *
+ * @param element Element that may reference external text.
+ * @param targetId Referenced element id.
+ * @returns True when the id appears as a whitespace-separated token.
+ */
+function referencesElementId(element: HTMLElement, targetId: string): boolean {
+  return ARIA_REFERENCE_ATTRIBUTES.some((attribute) => idrefTokens(element.getAttribute(attribute) ?? '').includes(targetId));
+}
+
+const ARIA_REFERENCE_ATTRIBUTES = ['aria-labelledby', 'aria-describedby', 'aria-errormessage'];
+
+/**
+ * Splits an ARIA idref string into non-empty id tokens.
+ *
+ * @param value ARIA idref or idref list value.
+ * @returns Whitespace-separated id tokens.
+ */
+function idrefTokens(value: string): string[] {
+  return value.split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Checks whether text belongs to a custom clickable or focusable page widget.
+ *
+ * @param element Element that owns a text node.
+ * @returns True when automatic annotation should yield to the page control.
+ */
+export function hasInteractiveSurfaceAncestor(element: HTMLElement): boolean {
+  for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+    if (isCustomInteractiveSurface(current)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Checks common non-semantic signals used by site-specific controls.
+ *
+ * @param element Potential custom control container.
+ * @returns True when the element is likely to handle page interaction itself.
+ */
+function isCustomInteractiveSurface(element: HTMLElement): boolean {
+  if (element.matches('a[href]')) {
+    return false;
+  }
+
+  return (
+    element.hasAttribute('onclick') ||
+    element.hasAttribute('aria-haspopup') ||
+    element.hasAttribute('data-action') ||
+    element.hasAttribute('data-testid') && hasInteractiveClassOrText(element) ||
+    hasKeyboardTabStop(element)
+  );
+}
+
+/**
+ * Checks whether a generic test hook also looks interactive.
+ *
+ * @param element Element that may be a test-addressed control.
+ * @returns True when class/id naming suggests a page action surface.
+ */
+function hasInteractiveClassOrText(element: HTMLElement): boolean {
+  const signal = `${element.id} ${element.className}`.toLowerCase();
+  return /\b(button|btn|trigger|toggle|menu|dropdown|action|chip|card)\b/.test(signal);
+}
+
+/**
+ * Checks whether an element participates in the keyboard tab order.
+ *
+ * @param element Element with a possible tabindex attribute.
+ * @returns True when tabindex is zero or positive.
+ */
+function hasKeyboardTabStop(element: HTMLElement): boolean {
+  const tabindex = element.getAttribute('tabindex');
+  if (tabindex === null) {
+    return false;
+  }
+
+  const parsedTabIndex = Number.parseInt(tabindex, 10);
+  return Number.isFinite(parsedTabIndex) && parsedTabIndex >= 0;
+}
+
+/**
  * Checks whether an element or one of its ancestors is visually hidden.
  *
  * @param element Element that owns a text node.
@@ -187,6 +374,7 @@ function hasComputedHiddenStyle(element: HTMLElement): boolean {
   return (
     hasContentHiddenStyle(style) ||
     hasClippedHiddenStyle(style) ||
+    hasTransformCollapsedStyle(style) ||
     hasZeroSizeOverflowHiddenStyle(style) ||
     hasOffscreenHiddenStyle(style)
   );
@@ -226,6 +414,17 @@ function hasClippedHiddenStyle(style: CSSStyleDeclaration): boolean {
   }
 
   return numericCssPx(style.width) <= 1 && numericCssPx(style.height) <= 1;
+}
+
+/**
+ * Checks transform styles that collapse painted content to an invisible point.
+ *
+ * @param style Computed style for the current element.
+ * @returns True when scale transform makes the subtree visually unavailable.
+ */
+function hasTransformCollapsedStyle(style: CSSStyleDeclaration): boolean {
+  const transform = style.transform.trim().toLowerCase();
+  return transform === 'scale(0)' || transform === 'scale(0, 0)' || transform === 'matrix(0, 0, 0, 0, 0, 0)';
 }
 
 /**
@@ -548,7 +747,9 @@ export function shouldCleanAnnotatedRoot(element: HTMLElement): boolean {
     hasClosedNativePopoverAncestor(element) ||
     hasClosedStatefulOverlayAncestor(element) ||
     hasInactiveAriaTabPanelAncestor(element) ||
-    hasBootstrapInactiveTabPaneAncestor(element)
+    hasBootstrapInactiveTabPaneAncestor(element) ||
+    hasAccessibleReferenceAncestor(element) ||
+    hasInteractiveSurfaceAncestor(element)
   );
 }
 

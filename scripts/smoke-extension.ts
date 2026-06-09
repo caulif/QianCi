@@ -4,6 +4,7 @@ import { extname, resolve } from 'node:path';
 import { chromium, type Page } from 'playwright';
 
 interface BuiltManifest {
+  content_scripts?: Array<{ all_frames?: boolean }>;
   web_accessible_resources?: Array<{ resources?: string[] }>;
 }
 
@@ -48,6 +49,18 @@ function findRankIndexResource(manifest: BuiltManifest): string {
     throw new Error('Could not find built rank index resource in manifest resources');
   }
   return rankIndexResource;
+}
+
+/**
+ * Verifies the production manifest keeps the default top-frame-only policy.
+ *
+ * @param manifest Built extension manifest from dist.
+ * @returns Nothing.
+ */
+function assertTopFrameOnlyManifest(manifest: BuiltManifest): void {
+  if (manifest.content_scripts?.some((script) => script.all_frames === true)) {
+    throw new Error('Built manifest should not inject QianCi into every frame by default');
+  }
 }
 
 async function assertContentBundleBudget(distDir: string, contentBundle: string): Promise<void> {
@@ -186,6 +199,8 @@ function compatibilitySmokeHtml(contentBundle: string): string {
       .css-content-hidden { content-visibility: hidden; }
       [data-selector-hidden] { display: none; }
       .measurement-row { height: 0; overflow: hidden; }
+      .scale-hidden { transform: scale(0); }
+      .zero-box-hidden { width: 0; height: 0; overflow: hidden; }
       .fixed-smoke-header {
         position: fixed;
         top: 0;
@@ -195,7 +210,32 @@ function compatibilitySmokeHtml(contentBundle: string): string {
         z-index: 1000000;
         background: white;
       }
+      .fixed-smoke-footer {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 96px;
+        z-index: 1000000;
+        background: white;
+      }
       .near-fixed-header-word { margin-top: 84px; }
+      .near-fixed-footer-word {
+        position: fixed;
+        left: 96px;
+        bottom: 104px;
+        z-index: 999999;
+        background: white;
+      }
+      .virtual-scroll {
+        height: 96px;
+        overflow: auto;
+        border: 1px solid #ddd;
+      }
+      .virtual-scroll-row {
+        height: 32px;
+        line-height: 32px;
+      }
       .css-offscreen { position: absolute; left: -9999px; }
       .css-clipped {
         position: absolute;
@@ -210,17 +250,35 @@ function compatibilitySmokeHtml(contentBundle: string): string {
     <script>window.anchorClicks = 0;</script>
     ${chromeApiStubScript(`{ 'qianci.profile': ${CLICK_PROFILE_SCRIPT} }`)}
     <header id="fixed-smoke-header" class="fixed-smoke-header">Fixed smoke header</header>
+    <footer id="fixed-smoke-footer" class="fixed-smoke-footer">Fixed smoke footer</footer>
     <nav id="site-nav">The meticulous site navigation should stay untouched.</nav>
     <div id="breadcrumb" role="navigation">The meticulous breadcrumb should stay untouched.</div>
     <article>
       <a id="nav" href="/next" onclick="window.anchorClicks += 1">Read the unobtrusive guide</a>
       <p class="near-fixed-header-word">The meticulous header-adjacent word remains readable.</p>
+      <p class="near-fixed-footer-word">The meticulous footer-adjacent word remains readable.</p>
       <p id="main-article-paragraph">The meticulous article remains readable.</p>
       <section class="qianci-ignore">The meticulous sidebar should stay untouched.</section>
       <aside data-qianci-ignore="true">The meticulous widget should stay untouched.</aside>
       <section id="polite-live" aria-live="polite">The meticulous live update should stay untouched.</section>
       <section id="status-toast" role="status">The meticulous status toast should stay untouched.</section>
       <section id="alert-toast" role="alert">The meticulous alert toast should stay untouched.</section>
+      <section id="translate-no" translate="no">The meticulous product name should stay untouched.</section>
+      <section id="notranslate" class="notranslate">The meticulous machine label should stay untouched.</section>
+      <span id="katex-renderer" class="katex">The meticulous formula renderer should stay untouched.</span>
+      <mjx-container id="mathjax-renderer">The meticulous MathJax renderer should stay untouched.</mjx-container>
+      <ruby id="ruby-copy">漢<rt>The meticulous ruby annotation should stay untouched.</rt></ruby>
+      <section id="busy-panel" aria-busy="true">The meticulous loading copy appears later.</section>
+      <div id="toolbar-widget" role="toolbar">The meticulous toolbar command should stay untouched.</div>
+      <div id="grid-widget" role="grid">The meticulous data grid cell should stay untouched.</div>
+      <button id="named-action" aria-labelledby="named-action-label"></button>
+      <span id="named-action-label">The meticulous command name should stay untouched.</span>
+      <input id="described-input" aria-describedby="described-input-hint">
+      <p id="described-input-hint">The meticulous input hint should stay untouched.</p>
+      <div id="onclick-card" onclick="window.cardClicked = true">The meticulous clickable card should stay untouched.</div>
+      <div id="tabindex-card" tabindex="0">The meticulous focusable card should stay untouched.</div>
+      <div id="menu-trigger" aria-haspopup="menu">The meticulous menu trigger should stay untouched.</div>
+      <span id="action-chip" data-action="open-menu">The meticulous action chip should stay untouched.</span>
       <section id="dynamic-ignore">The meticulous promo starts as readable.</section>
       <section id="style-hidden" style="display: none">The meticulous hidden style panel is collapsed.</section>
       <section id="style-restore" style="display: none">The meticulous restored style panel appears later.</section>
@@ -232,6 +290,8 @@ function compatibilitySmokeHtml(contentBundle: string): string {
       <section id="css-content-hidden" class="css-content-hidden">The meticulous css content hidden panel appears later.</section>
       <section id="css-selector-hidden" data-selector-hidden>The meticulous selector hidden panel appears later.</section>
       <section id="measurement-row" class="measurement-row">The meticulous measurement row appears later.</section>
+      <section id="scale-hidden-panel" class="scale-hidden">The meticulous transform hidden panel appears later.</section>
+      <section id="zero-box-panel" class="zero-box-hidden">The meticulous zero box panel appears later.</section>
       <section id="css-offscreen" class="css-offscreen">The meticulous css offscreen panel appears later.</section>
       <section id="css-clipped" class="css-clipped">The meticulous css clipped panel appears later.</section>
       <details id="details-panel">
@@ -287,6 +347,23 @@ function compatibilitySmokeHtml(contentBundle: string): string {
         <p>The meticulous unassigned light body is not rendered.</p>
       </no-slot-reader>
       <iframe id="embedded-copy" srcdoc="<p>The meticulous iframe copy is isolated.</p>"></iframe>
+      <div id="virtual-scroll" class="virtual-scroll">
+        <div class="virtual-scroll-row">The meticulous virtual row 0 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 1 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 2 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 3 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 4 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 5 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 6 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 7 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 8 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 9 remains readable.</div>
+        <div id="virtualized-recycled-row" class="virtual-scroll-row">The unobtrusive recycled row is visible.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 11 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 12 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 13 remains readable.</div>
+        <div class="virtual-scroll-row">The meticulous virtual row 14 remains readable.</div>
+      </div>
       <div id="virtual-row"><p>The unobtrusive virtual row is visible.</p></div>
       <p id="disappearing-row">The ubiquitous disappearing row may unload.</p>
       <div role="button">Open the meticulous menu</div>
@@ -315,6 +392,7 @@ function compatibilitySmokeHtml(contentBundle: string): string {
         '<section><slot name="body">The meticulous dynamic fallback body is visible.</slot></section>';
       const noSlotHost = document.querySelector('#no-slot-host');
       noSlotHost.attachShadow({ mode: 'open' }).innerHTML = '<p>The meticulous no-slot shadow body is visible.</p>';
+      document.querySelector('#virtual-scroll').scrollTop = 320;
     </script>
     <script type="module" src="/${contentBundle}"></script>
   </body>
@@ -433,10 +511,40 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
   if (liveRegionAnnotatedCounts.some((count) => count !== 0)) {
     throw new Error(`Live regions should not start annotated: ${liveRegionAnnotatedCounts.join('/')}`);
   }
+  const semanticGuardAnnotatedCounts = [
+    await page.locator('#translate-no [data-qianci-word]').count(),
+    await page.locator('#notranslate [data-qianci-word]').count(),
+    await page.locator('#katex-renderer [data-qianci-word]').count(),
+    await page.locator('#mathjax-renderer [data-qianci-word]').count(),
+    await page.locator('#ruby-copy rt [data-qianci-word]').count(),
+    await page.locator('#busy-panel [data-qianci-word]').count(),
+    await page.locator('#toolbar-widget [data-qianci-word]').count(),
+    await page.locator('#grid-widget [data-qianci-word]').count(),
+    await page.locator('#named-action-label [data-qianci-word]').count(),
+    await page.locator('#described-input-hint [data-qianci-word]').count(),
+    await page.locator('#onclick-card [data-qianci-word]').count(),
+    await page.locator('#tabindex-card [data-qianci-word]').count(),
+    await page.locator('#menu-trigger [data-qianci-word]').count(),
+    await page.locator('#action-chip [data-qianci-word]').count()
+  ];
+  if (semanticGuardAnnotatedCounts.some((count) => count !== 0)) {
+    throw new Error(`Semantic guard regions should not start annotated: ${semanticGuardAnnotatedCounts.join('/')}`);
+  }
   await page.locator('#polite-live').evaluate((region) => {
     region.removeAttribute('aria-live');
   });
   await page.locator('#polite-live [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.locator('#busy-panel').evaluate((panel) => {
+    panel.setAttribute('aria-busy', 'false');
+  });
+  await page.locator('#busy-panel [data-qianci-word="meticulous"]').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.locator('#named-action').evaluate((button) => {
+    button.removeAttribute('aria-labelledby');
+  });
+  await page.locator('#named-action-label [data-qianci-word="meticulous"]').waitFor({
+    state: 'visible',
+    timeout: 10_000
+  });
   const headerAdjacentWord = page.locator('.near-fixed-header-word [data-qianci-word="meticulous"]');
   await headerAdjacentWord.click({ timeout: 10_000 });
   await page.locator('[data-qianci-tooltip]').waitFor({ state: 'visible', timeout: 10_000 });
@@ -459,6 +567,30 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
   if (tooltipOverlapsHeader) {
     throw new Error('Tooltip should not overlap the fixed smoke header');
   }
+  await page.setViewportSize({ width: 260, height: 900 });
+  const footerAdjacentWord = page.locator('.near-fixed-footer-word [data-qianci-word="meticulous"]');
+  await footerAdjacentWord.click({ timeout: 10_000 });
+  await page.locator('[data-qianci-tooltip]').waitFor({ state: 'visible', timeout: 10_000 });
+  const tooltipOverlapsFooter = await page.evaluate(() => {
+    const footer = document.querySelector('#fixed-smoke-footer');
+    const tooltip = document.querySelector('[data-qianci-tooltip]');
+    if (!(footer instanceof HTMLElement) || !(tooltip instanceof HTMLElement)) {
+      throw new Error('Missing fixed footer or tooltip for occlusion check');
+    }
+
+    const footerRect = footer.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    return !(
+      tooltipRect.bottom <= footerRect.top ||
+      tooltipRect.top >= footerRect.bottom ||
+      tooltipRect.right <= footerRect.left ||
+      tooltipRect.left >= footerRect.right
+    );
+  });
+  if (tooltipOverlapsFooter) {
+    throw new Error('Tooltip should not overlap the fixed smoke footer');
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator('#late-shadow-host').evaluate((host) => {
     host.attachShadow({ mode: 'open' }).innerHTML = '<p>The meticulous late shadow body appears.</p>';
   });
@@ -513,6 +645,8 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
     '#css-content-hidden',
     '#css-selector-hidden',
     '#measurement-row',
+    '#scale-hidden-panel',
+    '#zero-box-panel',
     '#css-offscreen',
     '#css-clipped'
   ];
@@ -536,6 +670,12 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
   });
   await page.locator('#measurement-row').evaluate((panel) => {
     panel.classList.remove('measurement-row');
+  });
+  await page.locator('#scale-hidden-panel').evaluate((panel) => {
+    panel.classList.remove('scale-hidden');
+  });
+  await page.locator('#zero-box-panel').evaluate((panel) => {
+    panel.classList.remove('zero-box-hidden');
   });
   await page.locator('#css-offscreen').evaluate((panel) => {
     panel.classList.remove('css-offscreen');
@@ -709,6 +849,28 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
     throw new Error(`Default iframe content should not be annotated, got ${iframeAnnotated}`);
   }
 
+  const virtualScrollWord = page.locator('#virtualized-recycled-row [data-qianci-word="unobtrusive"]');
+  await virtualScrollWord.waitFor({ state: 'visible', timeout: 10_000 });
+  const virtualScrollTop = await page.locator('#virtual-scroll').evaluate((container) => container.scrollTop);
+  if (virtualScrollTop !== 320) {
+    throw new Error(`Virtual scroll position should stay stable after annotation, got ${virtualScrollTop}`);
+  }
+  await page.locator('#virtualized-recycled-row').evaluate((row) => {
+    row.textContent = 'The meticulous recycled row was reused without scroll drift.';
+  });
+  await page.waitForFunction(() => {
+    const container = document.querySelector('#virtual-scroll');
+    const row = document.querySelector('#virtualized-recycled-row');
+    if (!(container instanceof HTMLElement) || !row) {
+      return false;
+    }
+    return (
+      container.scrollTop === 320 &&
+      row.querySelector('[data-qianci-word="meticulous"]') &&
+      !row.querySelector('[data-qianci-word="unobtrusive"]')
+    );
+  });
+
   const virtualRowAnnotated = page.locator('#virtual-row [data-qianci-word="unobtrusive"]');
   await virtualRowAnnotated.waitFor({ state: 'visible', timeout: 10_000 });
   await page.locator('#virtual-row').evaluate((row) => {
@@ -821,6 +983,7 @@ async function main(): Promise<void> {
     throw new Error('Built manifest is missing the extension name');
   }
   const manifest = JSON.parse(manifestText) as BuiltManifest;
+  assertTopFrameOnlyManifest(manifest);
   const contentBundle = findContentBundle(manifest);
   const rankIndexResource = findRankIndexResource(manifest);
   await assertContentBundleBudget(distDir, contentBundle);

@@ -20,8 +20,7 @@ const manifest: ManifestV3Export = {
     {
       matches: ['http://*/*', 'https://*/*'],
       js: ['src/content/index.ts'],
-      run_at: 'document_idle',
-      all_frames: true
+      run_at: 'document_idle'
     }
   ]
 };

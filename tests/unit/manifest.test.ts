@@ -10,12 +10,14 @@ describe('extension manifest', () => {
     expect((manifest as { action?: { default_popup?: string } }).action?.default_popup).toBe('src/popup/index.html');
   });
 
-  it('injects content scripts into frames so embedded reading surfaces work', () => {
+  it('does not inject content scripts into every frame by default', () => {
     expect((manifest as { content_scripts?: unknown[] }).content_scripts?.[0]).toEqual(
       expect.objectContaining({
-        matches: ['http://*/*', 'https://*/*'],
-        all_frames: true
+        matches: ['http://*/*', 'https://*/*']
       })
+    );
+    expect((manifest as { content_scripts?: Array<{ all_frames?: boolean }> }).content_scripts?.[0]?.all_frames).not.toBe(
+      true
     );
   });
 });

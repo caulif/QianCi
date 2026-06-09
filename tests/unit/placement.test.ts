@@ -60,4 +60,16 @@ describe('tooltip placement', () => {
     expect(placement.vertical).toBe('below');
     expect(placement.y).toBeGreaterThan(116);
   });
+
+  it('places the tooltip above the word when a fixed footer would cover the stacked card', () => {
+    const placement = chooseTooltipPlacement(
+      { x: 100, y: 760, width: 64, height: 20 },
+      { width: 260, height: 900 },
+      { width: 180, height: 88 },
+      { bottomInset: 96 }
+    );
+
+    expect(placement.vertical).toBe('above');
+    expect(placement.y).toBeLessThan(760);
+  });
 });

@@ -115,4 +115,36 @@ describe('content compatibility web components', () => {
     expect(shadowRoot.querySelector('slot [data-qianci-word="meticulous"]')).not.toBeNull();
     app.dispose();
   });
+
+  it('discovers nested late shadow roots inside observed shadow DOM', async () => {
+    document.body.innerHTML = '<article><outer-reader id="outer-host"></outer-reader></article>';
+
+    const outerHost = document.querySelector('#outer-host') as HTMLElement;
+    const outerShadowRoot = outerHost.attachShadow({ mode: 'open' });
+    outerShadowRoot.innerHTML = '<section><inner-reader id="inner-host"></inner-reader></section>';
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const innerHost = outerShadowRoot.querySelector('#inner-host') as HTMLElement;
+    const innerShadowRoot = innerHost.attachShadow({ mode: 'open' });
+    innerShadowRoot.innerHTML = '<p>The meticulous nested shadow text appears later.</p>';
+    vi.advanceTimersByTime(250);
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(innerShadowRoot.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(outerHost.querySelector('[data-qianci-word]')).toBeNull();
+    app.dispose();
+  });
 });

@@ -32,7 +32,7 @@ export interface TooltipShowOptions {
 const TOOLTIP_WIDTH = 220;
 const TOOLTIP_HEIGHT = 108;
 const HIDE_DELAY_MS = 140;
-const TOP_OCCLUSION_SAMPLE_X = [0.15, 0.5, 0.85];
+const OCCLUSION_SAMPLE_X = [0.15, 0.5, 0.85];
 
 interface TextLineOptions {
   role?: string;
@@ -444,7 +444,7 @@ export function createTooltipController(doc: Document): TooltipController {
 
     const sampleY = 1;
     let inset = 0;
-    for (const ratio of TOP_OCCLUSION_SAMPLE_X) {
+    for (const ratio of OCCLUSION_SAMPLE_X) {
       const x = Math.max(0, Math.floor((view.innerWidth || 1280) * ratio));
       for (const element of doc.elementsFromPoint(x, sampleY)) {
         if (!(element instanceof HTMLElement) || element === tooltipHost || tooltipHost.contains(element)) {
@@ -465,6 +465,41 @@ export function createTooltipController(doc: Document): TooltipController {
     return inset;
   }
 
+  /**
+   * Detects fixed or sticky elements occupying the bottom of the viewport.
+   *
+   * @returns Height of the bottom occlusion area in viewport coordinates.
+   */
+  function bottomOcclusionInset(): number {
+    const view = doc.defaultView ?? window;
+    if (typeof doc.elementsFromPoint !== 'function') {
+      return 0;
+    }
+
+    const viewportHeight = view.innerHeight || 900;
+    const sampleY = Math.max(0, viewportHeight - 1);
+    let inset = 0;
+    for (const ratio of OCCLUSION_SAMPLE_X) {
+      const x = Math.max(0, Math.floor((view.innerWidth || 1280) * ratio));
+      for (const element of doc.elementsFromPoint(x, sampleY)) {
+        if (!(element instanceof HTMLElement) || element === tooltipHost || tooltipHost.contains(element)) {
+          continue;
+        }
+
+        const style = view.getComputedStyle(element);
+        if (style.position !== 'fixed' && style.position !== 'sticky') {
+          continue;
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.top < sampleY && rect.bottom >= sampleY) {
+          inset = Math.max(inset, viewportHeight - rect.top);
+        }
+      }
+    }
+    return inset;
+  }
+
   function place(anchor: HTMLElement | RectLike): void {
     const rect =
       'getBoundingClientRect' in anchor
@@ -475,7 +510,7 @@ export function createTooltipController(doc: Document): TooltipController {
       { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
       { width: view.innerWidth || 1280, height: view.innerHeight || 900 },
       { width: TOOLTIP_WIDTH, height: TOOLTIP_HEIGHT },
-      { topInset: topOcclusionInset() }
+      { topInset: topOcclusionInset(), bottomInset: bottomOcclusionInset() }
     );
 
     tooltipHost.style.left = `${placement.x}px`;

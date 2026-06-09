@@ -22,10 +22,15 @@ import {
 import { loadVocab, removeVocabItem, saveVocab, upsertVocabItem } from '../storage/vocabStore';
 import { loadSitePolicies, normalizeSitePolicies, SITE_POLICIES_KEY } from '../storage/sitePolicyStore';
 import { createProfilePersistenceQueue } from './profilePersistenceQueue';
+import { shouldBootstrapContentFrame } from './framePolicy';
 
 type RuntimeRankIndex = Record<string, number>;
 
 async function bootstrap(): Promise<void> {
+  if (!shouldBootstrapContentFrame(window)) {
+    return;
+  }
+
   const store = createChromeStorageAdapter(chrome.storage.local);
   let profile = (await loadProfile(store)) ?? createProfile('cet4');
   let customDictionary: CustomDictionary = await loadCustomDictionary(store);

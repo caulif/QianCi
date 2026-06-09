@@ -116,4 +116,54 @@ describe('content compatibility computed hidden selectors', () => {
     expect(measurementRow.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
     app.dispose();
   });
+
+  it('skips transform-collapsed and zero-size regions until they become visible', async () => {
+    document.head.innerHTML = `
+      <style>
+        .scale-hidden { transform: scale(0); }
+        .zero-box { width: 0; height: 0; overflow: hidden; }
+      </style>
+    `;
+    document.body.innerHTML = `
+      <main>
+        <article>
+          <p>The meticulous article paragraph remains readable.</p>
+        </article>
+        <section id="scale-hidden-panel" class="scale-hidden">
+          The meticulous transform hidden panel appears later.
+        </section>
+        <section id="zero-box-panel" class="zero-box">
+          The meticulous zero box panel appears later.
+        </section>
+      </main>
+    `;
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      siteMode: 'auto',
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: vi.fn(async () => ({ message: '未使用' })),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const scaleHiddenPanel = document.querySelector('#scale-hidden-panel') as HTMLElement;
+    const zeroBoxPanel = document.querySelector('#zero-box-panel') as HTMLElement;
+    expect(document.querySelector('article [data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(scaleHiddenPanel.querySelector('[data-qianci-word]')).toBeNull();
+    expect(zeroBoxPanel.querySelector('[data-qianci-word]')).toBeNull();
+
+    scaleHiddenPanel.classList.remove('scale-hidden');
+    zeroBoxPanel.classList.remove('zero-box');
+    await Promise.resolve();
+    await flushScanWork();
+
+    expect(scaleHiddenPanel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(zeroBoxPanel.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
+    app.dispose();
+  });
 });
