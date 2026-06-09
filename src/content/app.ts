@@ -10,6 +10,15 @@ import {
 } from '../core/profile';
 import type { LookupFeedbackMode, LookupTrigger, ManualShortcut, SiteMode, UserProfile } from '../core/types';
 import { createAnnotatedFragment } from './annotator';
+import {
+  hasActiveTextSelection,
+  removeAnnotationsInRoot,
+  removeAnnotationElement,
+  shouldCleanAnnotatedRoot,
+  shouldSkipTextNode,
+  SKIP_SELECTOR,
+  suppressPageClick
+} from './domCompatibility';
 import type { RectLike } from './placement';
 import { normalizeSelectedWord } from './selection';
 import { createTooltipController } from './tooltip';
@@ -42,21 +51,6 @@ export interface ContentApp {
   lookupSelection(selectionText: string, source?: 'alt' | 'menu'): Promise<void>;
   dispose(): void;
 }
-
-const SKIP_SELECTOR = [
-  'script',
-  'style',
-  'noscript',
-  'textarea',
-  'input',
-  'select',
-  'button',
-  'code',
-  'pre',
-  '[contenteditable="true"]',
-  '[data-qianci-tooltip]',
-  '[data-qianci-word]'
-].join(',');
 
 const RESCAN_DELAY_MS = 24;
 const SKIP_FEEDBACK_DELAY_MS = 3500;
@@ -100,19 +94,6 @@ function ensureStyles(doc: Document, underlineColor: string): void {
   `;
 }
 
-function shouldSkipTextNode(text: Text): boolean {
-  const parent = text.parentElement;
-  if (!parent) {
-    return true;
-  }
-  return Boolean(parent.closest(SKIP_SELECTOR));
-}
-
-function removeAnnotationElement(element: HTMLElement): void {
-  const text = element.ownerDocument.createTextNode(element.textContent ?? '');
-  element.replaceWith(text);
-}
-
 /**
  * Captures a stable tooltip anchor before the source element may be removed.
  *
@@ -131,6 +112,16 @@ function stableAnchor(anchor: HTMLElement | RectLike): HTMLElement | RectLike {
     width: rect.width,
     height: rect.height
   };
+}
+
+/**
+ * Checks whether a tooltip anchor can still be used after async work finishes.
+ *
+ * @param anchor Tooltip anchor from an annotated word or virtual selection.
+ * @returns True when the anchor is still valid for displaying lookup results.
+ */
+function isUsableAnchor(anchor: HTMLElement | RectLike): boolean {
+  return !(anchor instanceof HTMLElement) || anchor.isConnected;
 }
 
 function matchesManualShortcut(event: MouseEvent, shortcut: ManualShortcut): boolean {
@@ -365,6 +356,10 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
         return;
       }
 
+      if (!isUsableAnchor(anchor)) {
+        return;
+      }
+
       if (entry) {
         profile = applyLookupFeedback(profile, word, mode, Date.now());
         void services.onLookup(word, mode, profile, entry);
@@ -386,6 +381,9 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
           loadingVersion = tooltip.version();
           const result = await services.lookupOnline(word);
           if (tooltip.version() !== loadingVersion) {
+            return;
+          }
+          if (!isUsableAnchor(anchor)) {
             return;
           }
           if (!result.entry) {
@@ -464,11 +462,16 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       tooltip.scheduleHide();
     });
 
-    element.addEventListener('click', () => {
+    element.addEventListener('click', (event) => {
       if (profile.lookupTrigger !== 'click') {
         return;
       }
 
+      if (hasActiveTextSelection(doc)) {
+        return;
+      }
+
+      suppressPageClick(event);
       clearSkipCandidate(element);
       tooltip.cancelHide();
       void lookupWord(element, word, 'click');
@@ -772,6 +775,21 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     }
 
     observer.observe(root, {
+      attributes: true,
+      attributeFilter: [
+        'class',
+        'hidden',
+        'inert',
+        'aria-hidden',
+        'aria-controls',
+        'aria-expanded',
+        'aria-selected',
+        'role',
+        'contenteditable',
+        'data-qianci-ignore',
+        'style',
+        'open'
+      ],
       childList: true,
       characterData: true,
       subtree: true
@@ -820,6 +838,37 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     }
 
     for (const mutation of mutations) {
+      if (mutation.type === 'attributes') {
+        const target = mutation.target;
+        if (target instanceof HTMLElement) {
+          if (shouldCleanAnnotatedRoot(target)) {
+            removeAnnotationsInRoot(target);
+          } else {
+            scheduleScan(target);
+          }
+
+          const controlledIds = (target.getAttribute('aria-controls') ?? '').split(/\s+/).filter(Boolean);
+          for (const controlledId of controlledIds) {
+            const controlledElement = doc.getElementById(controlledId);
+            if (!controlledElement) {
+              continue;
+            }
+
+            if (target.getAttribute('aria-expanded') === 'false') {
+              removeAnnotationsInRoot(controlledElement);
+            } else if (target.getAttribute('role') === 'tab' && target.getAttribute('aria-selected') === 'false') {
+              removeAnnotationsInRoot(controlledElement);
+            } else {
+              scheduleScan(controlledElement);
+            }
+          }
+        }
+        if ((target instanceof HTMLDetailsElement || target instanceof HTMLDialogElement) && target.open) {
+          scheduleScan(target);
+        }
+        continue;
+      }
+
       if (mutation.type === 'characterData') {
         const parent = mutation.target.parentNode;
         if (parent instanceof HTMLElement && !parent.closest(SKIP_SELECTOR)) {
