@@ -1,11 +1,14 @@
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { extname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 
 interface BuiltManifest {
   web_accessible_resources?: Array<{ resources?: string[] }>;
 }
+
+const MAX_CONTENT_BUNDLE_BYTES = 650 * 1024;
+const MAX_INITIAL_CONTENT_ASSET_BYTES = 2 * 1024 * 1024;
 
 function findContentBundle(manifest: BuiltManifest): string {
   const resources = manifest.web_accessible_resources?.flatMap((entry) => entry.resources ?? []) ?? [];
@@ -14,6 +17,41 @@ function findContentBundle(manifest: BuiltManifest): string {
     throw new Error('Could not find built content script bundle in manifest resources');
   }
   return contentBundle;
+}
+
+function findRankIndexResource(manifest: BuiltManifest): string {
+  const resources = manifest.web_accessible_resources?.flatMap((entry) => entry.resources ?? []) ?? [];
+  const rankIndexResource = resources.find((resource) => /^assets\/rank\.generated-.*\.json$/.test(resource));
+  if (!rankIndexResource) {
+    throw new Error('Could not find built rank index resource in manifest resources');
+  }
+  return rankIndexResource;
+}
+
+async function assertContentBundleBudget(distDir: string, contentBundle: string): Promise<void> {
+  const contentBundleStat = await stat(resolve(distDir, contentBundle));
+  if (contentBundleStat.size > MAX_CONTENT_BUNDLE_BYTES) {
+    throw new Error(
+      `Content script bundle is too large: ${contentBundleStat.size} bytes exceeds ${MAX_CONTENT_BUNDLE_BYTES} bytes`
+    );
+  }
+}
+
+async function assertInitialContentAssetBudget(
+  distDir: string,
+  contentBundle: string,
+  rankIndexResource: string
+): Promise<void> {
+  const [contentBundleStat, rankIndexStat] = await Promise.all([
+    stat(resolve(distDir, contentBundle)),
+    stat(resolve(distDir, rankIndexResource))
+  ]);
+  const initialBytes = contentBundleStat.size + rankIndexStat.size;
+  if (initialBytes > MAX_INITIAL_CONTENT_ASSET_BYTES) {
+    throw new Error(
+      `Initial content assets are too large: ${initialBytes} bytes exceeds ${MAX_INITIAL_CONTENT_ASSET_BYTES} bytes`
+    );
+  }
 }
 
 async function findServiceWorkerBundle(): Promise<string> {
@@ -127,7 +165,11 @@ async function main(): Promise<void> {
   if (!manifestText.includes('潜词')) {
     throw new Error('Built manifest is missing the extension name');
   }
-  const contentBundle = findContentBundle(JSON.parse(manifestText) as BuiltManifest);
+  const manifest = JSON.parse(manifestText) as BuiltManifest;
+  const contentBundle = findContentBundle(manifest);
+  const rankIndexResource = findRankIndexResource(manifest);
+  await assertContentBundleBudget(distDir, contentBundle);
+  await assertInitialContentAssetBudget(distDir, contentBundle, rankIndexResource);
   const serviceWorkerBundle = await findServiceWorkerBundle();
   const serviceWorkerText = await readFile(resolve(distDir, serviceWorkerBundle), 'utf8');
   const hasActionClickHandler =
@@ -160,7 +202,7 @@ async function main(): Promise<void> {
     await annotated.hover({ timeout: 10_000 });
     const tooltip = page.locator('[data-qianci-tooltip]');
     await tooltip.waitFor({ state: 'visible', timeout: 10_000 });
-    const text = await tooltip.innerText();
+    const text = await tooltip.evaluate((element) => element.shadowRoot?.textContent ?? element.textContent ?? '');
     if (!text.includes('不唐突的')) {
       throw new Error(`Tooltip text missing translation: ${text}`);
     }

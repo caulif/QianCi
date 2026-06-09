@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { shouldAnnotateWord } from '../../src/core/decision';
-import { applyKnownFeedback, applyLookupFeedback, applySkipFeedback, createProfile } from '../../src/core/profile';
+import {
+  applyKnownFeedback,
+  applyLookupFeedback,
+  applySkipFeedback,
+  createProfile,
+  markWordAlwaysAnnotate
+} from '../../src/core/profile';
 
 describe('annotation decision', () => {
   it('annotates words above the user threshold and skips common words', () => {
@@ -26,11 +32,47 @@ describe('annotation decision', () => {
     expect(shouldAnnotateWord(skippedThreeTimes, { word: 'abrupt', rank: 2000 })).toBe(false);
   });
 
+  it('honors the configured weak feedback skip limit', () => {
+    const unknown = applyLookupFeedback(createProfile('professional'), 'abrupt', 'hover', 100);
+    const skippedOnce = applySkipFeedback(unknown, 'abrupt', 'a', 200);
+    const customLimit = {
+      ...skippedOnce,
+      feedbackSettings: {
+        ...skippedOnce.feedbackSettings,
+        skipLimit: 1
+      }
+    };
+
+    expect(shouldAnnotateWord(skippedOnce, { word: 'abrupt', rank: 2000 })).toBe(true);
+    expect(shouldAnnotateWord(customLimit, { word: 'abrupt', rank: 2000 })).toBe(false);
+  });
+
+  it('continues annotating words the user explicitly asked to keep reminding', () => {
+    const skippedOnce = applySkipFeedback(createProfile('professional'), 'abrupt', 'a', 100);
+    const skippedTwice = applySkipFeedback(skippedOnce, 'abrupt', 'b', 200);
+    const skippedThreeTimes = applySkipFeedback(skippedTwice, 'abrupt', 'c', 300);
+    const alwaysAnnotated = markWordAlwaysAnnotate(skippedThreeTimes, 'abrupt', 400);
+
+    expect(shouldAnnotateWord(skippedThreeTimes, { word: 'abrupt', rank: 2000 })).toBe(false);
+    expect(shouldAnnotateWord(alwaysAnnotated, { word: 'abrupt', rank: 2000 })).toBe(true);
+  });
+
   it('uses level score to make the same level more or less aggressive', () => {
     const lower = createProfile('cet4');
     const higher = { ...createProfile('cet4'), levelScore: 4.2 };
 
     expect(shouldAnnotateWord(lower, { word: 'nuance', rank: 9_000 })).toBe(true);
     expect(shouldAnnotateWord(higher, { word: 'nuance', rank: 9_000 })).toBe(false);
+  });
+
+  it('uses annotation density to adjust how many ordinary words are marked', () => {
+    const balanced = createProfile('cet4');
+    const fewer = { ...balanced, annotationDensity: 0.75 };
+    const more = { ...balanced, annotationDensity: 1.25 };
+
+    expect(shouldAnnotateWord(balanced, { word: 'moderate', rank: 4_000 })).toBe(false);
+    expect(shouldAnnotateWord(more, { word: 'moderate', rank: 4_500 })).toBe(true);
+    expect(shouldAnnotateWord(balanced, { word: 'nuance', rank: 7_000 })).toBe(true);
+    expect(shouldAnnotateWord(fewer, { word: 'nuance', rank: 7_000 })).toBe(false);
   });
 });

@@ -3,6 +3,8 @@ export interface DictionaryAttribution {
   url: string;
   serviceLabel?: string;
   serviceUrl?: string;
+  translationServiceLabel?: string;
+  translationServiceUrl?: string;
 }
 
 export interface DictionaryEntry {

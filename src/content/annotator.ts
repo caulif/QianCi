@@ -17,6 +17,12 @@ export function createAnnotatedFragment(text: string, shouldAnnotate: TokenDecid
       const span = document.createElement('span');
       span.className = 'qianci-word';
       span.dataset.qianciWord = token.normalized;
+      span.tabIndex = 0;
+      span.setAttribute('role', 'button');
+      span.setAttribute('aria-label', `查看 ${token.normalized} 的释义`);
+      span.setAttribute('aria-keyshortcuts', 'Enter Space');
+      span.setAttribute('aria-haspopup', 'dialog');
+      span.setAttribute('aria-expanded', 'false');
       span.textContent = token.text;
       fragment.append(span);
     } else {
