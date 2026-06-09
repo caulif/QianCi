@@ -67,6 +67,27 @@ describe('content app', () => {
     await Promise.resolve();
   }
 
+  /**
+   * Stubs an element rectangle so scan priority tests can model viewport distance in JSDOM.
+   *
+   * @param element Element whose bounding rectangle should be controlled.
+   * @param top Top coordinate returned by getBoundingClientRect.
+   * @returns Nothing.
+   */
+  function setElementTop(element: Element, top: number): void {
+    vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      right: 800,
+      bottom: top + 32,
+      width: 800,
+      height: 32,
+      toJSON: () => ({})
+    } as DOMRect);
+  }
+
   beforeEach(() => {
     document.body.innerHTML = '';
     vi.useRealTimers();
@@ -1777,6 +1798,31 @@ describe('content app', () => {
     app.dispose();
   });
 
+  it('reports scan performance diagnostics for popup self-check', async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<article><p>The meticulous reader noticed the unobtrusive cue.</p></article>';
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      ranks: { meticulous: 9200, unobtrusive: 8100 },
+      resolveEntry: createResolver({}),
+      lookupOnline: createOnlineLookup(),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+
+    app.rescan();
+    await flushScanWork();
+
+    const diagnostics = app.getDiagnostics();
+    expect(diagnostics.maxScanSliceDurationMs).toBeGreaterThanOrEqual(diagnostics.lastScanDurationMs);
+    expect(diagnostics.queuedScanNodes).toBe(0);
+    expect(diagnostics.deferredScanNodes).toBeGreaterThanOrEqual(0);
+    expect(diagnostics.throttledMutationBatches).toBe(0);
+    app.dispose();
+  });
+
   it('warns when the page looks like an editor, form, or code-heavy surface', () => {
     document.body.innerHTML = `
       <main>
@@ -1886,6 +1932,111 @@ describe('content app', () => {
     nowSpy.mockImplementation(originalNow);
     await flushScanWork();
     expect(document.querySelectorAll('[data-qianci-word]')).toHaveLength(4);
+    app.dispose();
+  });
+
+  it('prioritizes viewport prose before offscreen prose during early scan slices', async () => {
+    vi.useFakeTimers();
+    const originalNow = performance.now.bind(performance);
+    const nowSpy = vi.spyOn(performance, 'now');
+    let callCount = 0;
+    nowSpy.mockImplementation(() => {
+      callCount += 1;
+      return callCount <= 10 ? 0 : 10;
+    });
+    document.body.innerHTML = `
+      <article>
+        <p id="offscreen-prose">The meticulous offscreen paragraph waits.</p>
+        <p id="viewport-prose">The meticulous viewport paragraph reads first.</p>
+      </article>
+    `;
+    setElementTop(document.querySelector('#offscreen-prose') as Element, 5000);
+    setElementTop(document.querySelector('#viewport-prose') as Element, 80);
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: createOnlineLookup(),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+
+    app.rescan();
+    await flushSingleScanSlice();
+
+    expect(document.querySelector('#viewport-prose [data-qianci-word="meticulous"]')).not.toBeNull();
+    expect(document.querySelector('#offscreen-prose [data-qianci-word="meticulous"]')).toBeNull();
+
+    nowSpy.mockImplementation(originalNow);
+    await flushScanWork();
+    expect(document.querySelector('#offscreen-prose [data-qianci-word="meticulous"]')).not.toBeNull();
+    app.dispose();
+  });
+
+  it('yields scan continuation briefly after user scroll interaction', async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<article><p>The meticulous reader noticed the unobtrusive cue.</p></article>';
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      ranks: { meticulous: 9200, unobtrusive: 8100 },
+      resolveEntry: createResolver({}),
+      lookupOnline: createOnlineLookup(),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+
+    app.rescan();
+    vi.advanceTimersByTime(RESCAN_DELAY_MS);
+    document.dispatchEvent(new Event('scroll'));
+    vi.advanceTimersByTime(1);
+    await Promise.resolve();
+
+    expect(document.querySelectorAll('[data-qianci-word]')).toHaveLength(0);
+
+    vi.advanceTimersByTime(80);
+    await Promise.resolve();
+    expect(document.querySelectorAll('[data-qianci-word]')).toHaveLength(2);
+    app.dispose();
+  });
+
+  it('throttles high-frequency mutation batches before scanning dynamic pages', async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<article id="root"><p>The quiet intro remains readable.</p></article>';
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      ranks: { meticulous: 9200 },
+      resolveEntry: createResolver({}),
+      lookupOnline: createOnlineLookup(),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+
+    const root = document.querySelector('#root') as HTMLElement;
+    for (let index = 0; index < 48; index += 1) {
+      const extra = document.createElement('p');
+      extra.textContent = `The meticulous dynamic paragraph ${index} appears.`;
+      root.append(extra);
+    }
+    await Promise.resolve();
+
+    vi.advanceTimersByTime(RESCAN_DELAY_MS);
+    await Promise.resolve();
+    const throttledDiagnostics = app.getDiagnostics();
+
+    expect(throttledDiagnostics.pendingScan).toBe(true);
+    expect(throttledDiagnostics.throttledMutationBatches).toBeGreaterThan(0);
+    expect(document.querySelector('[data-qianci-word="meticulous"]')).toBeNull();
+
+    vi.advanceTimersByTime(120);
+    await Promise.resolve();
+    await flushScanWork();
+    expect(document.querySelector('[data-qianci-word="meticulous"]')).not.toBeNull();
     app.dispose();
   });
 

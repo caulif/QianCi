@@ -31,6 +31,10 @@ export interface PageDiagnostics {
   pendingScan: boolean;
   lastScanAt: number;
   lastScanDurationMs: number;
+  maxScanSliceDurationMs?: number;
+  queuedScanNodes?: number;
+  deferredScanNodes?: number;
+  throttledMutationBatches?: number;
   warnings: Array<'manual-only' | 'paused' | 'dynamic-page' | 'editor-detected' | 'form-heavy' | 'code-heavy'>;
 }
 

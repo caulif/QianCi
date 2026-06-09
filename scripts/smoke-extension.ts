@@ -260,6 +260,13 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
   ]);
   await waitForAnnotatedWord(page, '#commerce-product .product-description', 'meticulous');
   await waitForAnnotatedWord(page, '#commerce-product .review-body', 'meticulous');
+  await assertNoAnnotations(page, 'Consent and marketing overlays', [
+    '#overlay-noise-sample #onetrust-banner-sdk',
+    '#overlay-noise-sample #CybotCookiebotDialog',
+    '#overlay-noise-sample .newsletter-popup',
+    '#overlay-noise-sample .announcement-bar'
+  ]);
+  await waitForAnnotatedWord(page, '#overlay-noise-sample #cookie-research', 'meticulous');
   await page.locator('#search-results-sample .result__title [data-qianci-word="meticulous"]').waitFor({
     state: 'visible',
     timeout: 10_000
@@ -306,6 +313,17 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
   if (lazyPdfAnnotations !== 0) {
     throw new Error(`Lazy PDF.js text layer should not be annotated, got ${lazyPdfAnnotations}`);
   }
+  await page.locator('#late-overlay-root').evaluate((root) => {
+    root.innerHTML = `
+      <section class="cookie-consent-banner">The meticulous late consent banner should stay untouched.</section>
+      <section class="subscribe-modal">The meticulous late subscribe modal should stay untouched.</section>
+    `;
+  });
+  await page.waitForFunction(() => document.querySelector('#late-overlay-root .cookie-consent-banner'));
+  await assertNoAnnotations(page, 'Lazy consent and marketing overlays', [
+    '#late-overlay-root .cookie-consent-banner',
+    '#late-overlay-root .subscribe-modal'
+  ]);
   await page.locator('#github-lazy-files').evaluate((files) => {
     files.innerHTML = `
       <div class="js-file">

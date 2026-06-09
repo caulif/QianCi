@@ -1,6 +1,5 @@
 import { shouldAnnotateWord } from '../core/decision';
 import type { DictionaryEntry } from '../core/dictionaryEntry';
-import type { OnlineLookupErrorKind, PageDiagnostics } from '../core/messages';
 import {
   applyKnownFeedback,
   applyLookupFeedback,
@@ -8,8 +7,19 @@ import {
   markWordAlwaysAnnotate,
   underlineToneColor
 } from '../core/profile';
-import type { LookupFeedbackMode, LookupTrigger, ManualShortcut, SiteMode, UserProfile } from '../core/types';
+import type { LookupFeedbackMode } from '../core/types';
+import { buildPageDiagnostics } from './appDiagnostics';
+import {
+  ensureStyles,
+  isUsableAnchor,
+  matchesManualShortcut,
+  onlineLookupStatusMessage,
+  readSkipDelayMs,
+  selectionAnchor,
+  stableAnchor
+} from './appHelpers';
 import { createAnnotatedFragment } from './annotator';
+import type { ContentApp, ContentServices } from './contentAppTypes';
 import {
   ariaReferenceTargetsFromMutation,
   hasActiveTextSelection,
@@ -22,142 +32,24 @@ import {
 } from './domCompatibility';
 import type { RectLike } from './placement';
 import { normalizeSelectedWord } from './selection';
+import {
+  clearUserInteractionYield,
+  createScanSchedulerState,
+  interactionYieldDelayMs,
+  markUserInteraction,
+  prioritizeChildNodes,
+  recordMutationBatch,
+  scanPreparationDelayMs,
+  shouldYieldForInteraction
+} from './scanScheduler';
 import { createTooltipController } from './tooltip';
-import { containsQianciAnnotation } from './mutationCompatibility';
-
-export interface ContentServices {
-  profile: UserProfile;
-  ranks: Record<string, number>;
-  resolveEntry(word: string): Promise<DictionaryEntry | undefined>;
-  lookupOnline(word: string): Promise<{
-    entry?: DictionaryEntry;
-    message: string;
-    errorKind?: OnlineLookupErrorKind;
-    queued?: boolean;
-  }>;
-  siteMode?: SiteMode;
-  onKnown(word: string, profile: UserProfile): void | Promise<void>;
-  onUndoKnown?(word: string, profile: UserProfile, entry?: DictionaryEntry): void | Promise<void>;
-  onLookup(word: string, mode: LookupFeedbackMode, profile: UserProfile, entry?: DictionaryEntry): void | Promise<void>;
-  onSkip(word: string, pageKey: string, profile: UserProfile): void | Promise<void>;
-  onAlwaysAnnotate?(word: string, profile: UserProfile): void | Promise<void>;
-  onUndoAlwaysAnnotate?(word: string, profile: UserProfile): void | Promise<void>;
-  onTranslationFeedback?(word: string, entry: DictionaryEntry): void | Promise<void>;
-}
-
-export interface ContentApp {
-  rescan(): void;
-  updateProfile(profile: UserProfile): void;
-  updateSiteMode(mode: SiteMode): void;
-  getDiagnostics(): PageDiagnostics;
-  lookupSelection(selectionText: string, source?: 'alt' | 'menu'): Promise<void>;
-  dispose(): void;
-}
+import { containsQianciAnnotation, containsQianciOwnedNode, isQianciOwnedMutation } from './mutationCompatibility';
 
 const RESCAN_DELAY_MS = 24;
-const SKIP_FEEDBACK_DELAY_MS = 3500;
 const SCAN_SLICE_BUDGET_MS = 8;
 const SCAN_CONTINUATION_DELAY_MS = 0;
 const SHADOW_DISCOVERY_INTERVAL_MS = 250;
 const SHADOW_DISCOVERY_MAX_ATTEMPTS = 20;
-
-/**
- * Reads weak-skip delay from newer profiles while preserving old-profile defaults.
- *
- * @param currentProfile User profile that may not yet expose feedbackSettings in its type.
- * @returns Safe skip delay in milliseconds.
- */
-function readSkipDelayMs(currentProfile: UserProfile): number {
-  const delayMs = currentProfile.feedbackSettings?.skipDelayMs;
-  if (typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs < 0) {
-    return SKIP_FEEDBACK_DELAY_MS;
-  }
-  return delayMs;
-}
-
-function ensureStyles(doc: Document, underlineColor: string): void {
-  let style = doc.querySelector<HTMLStyleElement>('[data-qianci-style]');
-  if (!style) {
-    style = doc.createElement('style');
-    style.dataset.qianciStyle = 'true';
-    doc.head.append(style);
-  }
-
-  style.textContent = `
-    .qianci-word {
-      border-bottom: 1px dashed ${underlineColor};
-      cursor: help;
-      text-decoration: none;
-    }
-
-    .qianci-word:focus-visible {
-      outline: 2px solid ${underlineColor};
-      outline-offset: 2px;
-      border-radius: 2px;
-    }
-  `;
-}
-
-/**
- * Captures a stable tooltip anchor before the source element may be removed.
- *
- * @param anchor Tooltip anchor from the annotated word or virtual selection.
- * @returns Rect-like position safe to reuse after DOM mutation.
- */
-function stableAnchor(anchor: HTMLElement | RectLike): HTMLElement | RectLike {
-  if (!('getBoundingClientRect' in anchor)) {
-    return anchor;
-  }
-
-  const rect = anchor.getBoundingClientRect();
-  return {
-    x: rect.left,
-    y: rect.top,
-    width: rect.width,
-    height: rect.height
-  };
-}
-
-/**
- * Checks whether a tooltip anchor can still be used after async work finishes.
- *
- * @param anchor Tooltip anchor from an annotated word or virtual selection.
- * @returns True when the anchor is still valid for displaying lookup results.
- */
-function isUsableAnchor(anchor: HTMLElement | RectLike): boolean {
-  return !(anchor instanceof HTMLElement) || anchor.isConnected;
-}
-
-function matchesManualShortcut(event: MouseEvent, shortcut: ManualShortcut): boolean {
-  switch (shortcut) {
-    case 'ctrl':
-      return event.ctrlKey;
-    case 'shift':
-      return event.shiftKey;
-    case 'meta':
-      return event.metaKey;
-    case 'alt':
-    default:
-      return event.altKey;
-  }
-}
-
-function selectionAnchor(doc: Document, fallback?: HTMLElement): HTMLElement | RectLike {
-  const selection = doc.getSelection();
-  if (selection?.rangeCount) {
-    const rect = selection.getRangeAt(0).getBoundingClientRect();
-    if (rect.width || rect.height) {
-      return {
-        x: rect.left,
-        y: rect.top,
-        width: rect.width,
-        height: rect.height
-      };
-    }
-  }
-
-  return fallback ?? doc.body;
-}
 
 interface ShadowDiscoveryHost {
   host: HTMLElement;
@@ -176,6 +68,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
   const shadowDiscoveryHosts: ShadowDiscoveryHost[] = [];
   const trackedShadowDiscoveryHosts = new WeakSet<HTMLElement>();
   const slotEventRoots: EventTarget[] = [];
+  const scanScheduler = createScanSchedulerState();
   let observedRoots = new WeakSet<ParentNode>();
   let observedRootList: ParentNode[] = [];
   const nodeQueue: Node[] = [];
@@ -188,6 +81,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
   let scannedTextNodes = 0;
   let lastScanAt = 0;
   let lastScanDurationMs = 0;
+  let maxScanSliceDurationMs = 0;
 
   function pageKey(): string {
     return doc.location?.href || 'document';
@@ -220,6 +114,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
         profile = previousProfile;
         void services.onUndoKnown?.(word, profile, entry);
         tooltip.hide();
+        clearUserInteractionYield(scanScheduler);
         scheduleScan(doc.body);
       });
     };
@@ -307,38 +202,6 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
   interface LookupWordOptions {
     focusPrimaryAction?: boolean;
     returnFocusTo?: HTMLElement;
-  }
-
-  /**
-   * 将联网补查结果转换成用户能理解的 tooltip 状态文案。
-   *
-   * @param result 联网补查返回值。
-   * @returns 适合显示在缺词卡片里的提示。
-   */
-  function onlineLookupStatusMessage(result: {
-    message: string;
-    errorKind?: OnlineLookupErrorKind;
-    queued?: boolean;
-  }): string {
-    const fallbackMessages: Record<OnlineLookupErrorKind, string> = {
-      not_found: '暂时没有找到词条',
-      rate_limited: '在线词典请求过于频繁，请稍后再试',
-      service_unavailable: '在线词典暂时不可用，请稍后再试',
-      network_error: '网络异常，稍后可重试',
-      timeout: '联网查询超时，稍后可重试',
-      parse_error: '在线词典返回内容异常，请稍后再试'
-    };
-    const baseMessage =
-      result.message && result.message !== '联网查询失败'
-        ? result.message
-        : result.errorKind
-          ? fallbackMessages[result.errorKind]
-          : '联网查询失败';
-    if (!result.queued) {
-      return baseMessage;
-    }
-
-    return `${baseMessage}。已加入重试队列，稍后自动重试。`;
   }
 
   async function showOnlineResult(
@@ -443,6 +306,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     scheduleSkipFeedback(element, word);
 
     element.addEventListener('mouseenter', () => {
+      markUserInteraction(scanScheduler, performance.now());
       if (profile.lookupTrigger !== 'hover') {
         return;
       }
@@ -476,6 +340,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     });
 
     element.addEventListener('click', (event) => {
+      markUserInteraction(scanScheduler, performance.now());
       if (profile.lookupTrigger !== 'click') {
         return;
       }
@@ -491,6 +356,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     });
 
     element.addEventListener('keydown', (event) => {
+      markUserInteraction(scanScheduler, performance.now());
       if (event.key !== 'Enter' && event.key !== ' ') {
         return;
       }
@@ -521,7 +387,17 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       return;
     }
 
+    markUserInteraction(scanScheduler, performance.now());
     void lookupSelection(doc.getSelection()?.toString() ?? '', 'alt');
+  }
+
+  /**
+   * Records passive user activity so automatic scanning can yield briefly.
+   *
+   * @returns Nothing.
+   */
+  function handleScanYieldInteraction(): void {
+    markUserInteraction(scanScheduler, performance.now());
   }
 
   function annotateTextNode(textNode: Text): void {
@@ -544,58 +420,21 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     textNode.replaceWith(fragment);
   }
 
-  function annotatedWordCount(): number {
-    const annotatedWords = new Set<HTMLElement>();
-    for (const root of [doc, ...observedRootList]) {
-      for (const element of Array.from(root.querySelectorAll<HTMLElement>('[data-qianci-word]'))) {
-        annotatedWords.add(element);
-      }
-    }
-    return annotatedWords.size;
-  }
-
-  function diagnosticsWarnings(): PageDiagnostics['warnings'] {
-    const warnings: PageDiagnostics['warnings'] = [];
-    if (siteMode === 'paused') {
-      warnings.push('paused');
-    }
-
-    if (siteMode === 'manual-only') {
-      warnings.push('manual-only');
-    }
-
-    if (pendingRoots.size > 10) {
-      warnings.push('dynamic-page');
-    }
-
-    if (doc.querySelector('[contenteditable="true"], [role="textbox"], .monaco-editor, .cm-editor, .CodeMirror')) {
-      warnings.push('editor-detected');
-    }
-
-    const editableFields = doc.querySelectorAll(
-      'textarea, input:not([type]), input[type="text"], input[type="search"], input[type="email"], input[type="url"]'
-    );
-    if (editableFields.length >= 2) {
-      warnings.push('form-heavy');
-    }
-
-    if (doc.querySelectorAll('pre').length >= 2) {
-      warnings.push('code-heavy');
-    }
-
-    return warnings;
-  }
-
-  function getDiagnostics(): PageDiagnostics {
-    return {
+  function getDiagnostics() {
+    return buildPageDiagnostics({
+      doc,
+      observedRootList,
       siteMode,
-      annotatedWords: annotatedWordCount(),
+      pendingRootCount: pendingRoots.size,
+      hasPendingScan: Boolean(rescanTimer) || hasActiveScanQueue(),
       scannedTextNodes,
-      pendingScan: Boolean(rescanTimer) || hasActiveScanQueue(),
       lastScanAt,
       lastScanDurationMs,
-      warnings: diagnosticsWarnings()
-    };
+      maxScanSliceDurationMs,
+      queuedScanNodes: Math.max(0, nodeQueue.length - nodeQueueIndex),
+      deferredScanNodes: scanScheduler.deferredScanNodes,
+      throttledMutationBatches: scanScheduler.throttledMutationBatches
+    });
   }
 
   /**
@@ -677,7 +516,10 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       return;
     }
 
-    rescanTimer = window.setTimeout(prepareScanQueue, RESCAN_DELAY_MS);
+    rescanTimer = window.setTimeout(
+      prepareScanQueue,
+      scanPreparationDelayMs(scanScheduler, RESCAN_DELAY_MS, performance.now())
+    );
   }
 
   /**
@@ -685,12 +527,12 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
    *
    * @returns Nothing.
    */
-  function scheduleScanContinuation(): void {
+  function scheduleScanContinuation(delayMs = SCAN_CONTINUATION_DELAY_MS): void {
     if (scanContinuationTimer || disposed) {
       return;
     }
 
-    scanContinuationTimer = window.setTimeout(processScanQueue, SCAN_CONTINUATION_DELAY_MS);
+    scanContinuationTimer = window.setTimeout(processScanQueue, delayMs);
   }
 
   /**
@@ -734,6 +576,12 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       return;
     }
 
+    const now = performance.now();
+    if (shouldYieldForInteraction(scanScheduler, now)) {
+      scheduleScanContinuation(interactionYieldDelayMs(scanScheduler, now));
+      return;
+    }
+
     const startedAt = performance.now();
     while (nodeQueueIndex < nodeQueue.length) {
       const node = nodeQueue[nodeQueueIndex];
@@ -754,19 +602,24 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
           continue;
         }
 
+        const nextNodes: Node[] = [];
         if (node instanceof HTMLElement && node.shadowRoot) {
           observeRoot(node.shadowRoot);
-          nodeQueue.push(node.shadowRoot);
+          nextNodes.push(node.shadowRoot);
         } else if (node instanceof HTMLElement) {
           trackShadowDiscoveryHost(node);
         }
 
-        nodeQueue.push(...Array.from(node.childNodes));
+        const prioritized = prioritizeChildNodes(Array.from(node.childNodes), doc);
+        scanScheduler.deferredScanNodes += prioritized.deferredCount;
+        nextNodes.push(...prioritized.nodes);
+        nodeQueue.splice(nodeQueueIndex, 0, ...nextNodes);
       }
 
       if (performance.now() - startedAt >= SCAN_SLICE_BUDGET_MS) {
         lastScanAt = Date.now();
         lastScanDurationMs = Math.max(0, Math.round(performance.now() - startedAt));
+        maxScanSliceDurationMs = Math.max(maxScanSliceDurationMs, lastScanDurationMs);
         scheduleScanContinuation();
         return;
       }
@@ -774,6 +627,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
 
     lastScanAt = Date.now();
     lastScanDurationMs = Math.max(0, Math.round(performance.now() - startedAt));
+    maxScanSliceDurationMs = Math.max(maxScanSliceDurationMs, lastScanDurationMs);
     nodeQueue.length = 0;
     nodeQueueIndex = 0;
     if (pendingRoots.size) {
@@ -954,9 +808,29 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
   }
 
   doc.addEventListener('mouseup', handleManualSelection);
+  doc.addEventListener('scroll', handleScanYieldInteraction, true);
+  doc.addEventListener('selectionchange', handleScanYieldInteraction);
   observer = new MutationObserver((mutations) => {
     if (disposed) {
       return;
+    }
+
+    const pageMutationCount = mutations.filter((mutation) => {
+      if (isQianciOwnedMutation(mutation)) {
+        return false;
+      }
+
+      if (mutation.type !== 'childList') {
+        return true;
+      }
+
+      return (
+        !containsQianciOwnedNode(Array.from(mutation.addedNodes)) &&
+        !containsQianciOwnedNode(Array.from(mutation.removedNodes))
+      );
+    }).length;
+    if (pageMutationCount > 0) {
+      recordMutationBatch(scanScheduler, pageMutationCount, performance.now());
     }
 
     for (const mutation of mutations) {
@@ -1066,6 +940,8 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       }
 
       scannedTextNodes = 0;
+      maxScanSliceDurationMs = 0;
+      clearUserInteractionYield(scanScheduler);
       scheduleScan(doc.body);
     },
     updateProfile(nextProfile) {
@@ -1080,6 +956,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
 
       siteMode = mode;
       if (siteMode === 'auto') {
+        clearUserInteractionYield(scanScheduler);
         observeBody();
         scheduleScan(doc.body);
         return;
@@ -1096,6 +973,8 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     dispose() {
       disposed = true;
       doc.removeEventListener('mouseup', handleManualSelection);
+      doc.removeEventListener('scroll', handleScanYieldInteraction, true);
+      doc.removeEventListener('selectionchange', handleScanYieldInteraction);
       doc.removeEventListener('toggle', handlePopoverToggle, true);
       skipCandidates.clear();
       if (skipFeedbackTimer) {

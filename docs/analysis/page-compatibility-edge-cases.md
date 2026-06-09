@@ -37,6 +37,7 @@
 - 搜索结果页噪声区：跳过 `form[role="search"]`、`.search__form`、`.result__url`、`cite`、`.result__extras`、`.result__sitelinks`、`.result--ad`、`.people-also-ask`、`.related-question`、`.related-searches`、`.pagination`；当前策略保留结果标题和摘要标注，让用户能在 SERP 摘要里继续学习。
 - 搜索结果动态重排：自然结果已标注后，插入广告、移动结果卡、更新摘要时，广告/PAA/sitelinks 不标注，自然标题和摘要不重复、不嵌套。
 - 电商/产品页噪声区：跳过 `.product-meta`、`.product-form`、`.product-actions`、价格、SKU、评分、变体选择、数量选择、购买按钮、物流、优惠券、促销和 schema.org `price/sku/ratingValue/reviewRating` 等交易元信息；产品描述和评论正文仍可标注。
+- Cookie/同意管理与营销浮层：跳过 OneTrust、Cookiebot、cookie consent/banner、GDPR/privacy banner、newsletter/subscribe popup、promo banner 和 announcement bar；普通正文里讨论 cookie/browser privacy 的段落仍可标注，避免用 `[id*="cookie"]` 这类过宽规则。
 - ARIA live/toast 区域：跳过 `[aria-live]:not([aria-live="off"])`、`role=status`、`role=alert`、`role=log`，避免动态播报区被自动改写并造成读屏噪声；移除 live 语义后可恢复标注。
 - 语义保护区：跳过 `translate="no"`、`.notranslate`、`progress`、`meter`、KaTeX/MathJax 公式渲染、`rt/rp` ruby 注音、`aria-busy="true"` 和复杂 ARIA widget，避免改写产品名、公式层、加载中区域和非正文控件。
 - 可访问名称引用：跳过被交互控件 `aria-labelledby`、`aria-describedby`、`aria-errormessage` 引用的外部文本，避免标注 wrapper 改变按钮/输入控件的可访问名称或说明；当引用属性移除时会扫描旧引用目标并恢复正文标注。
@@ -78,6 +79,7 @@
 - KaTeX/MathJax 与 HTML ruby：公式渲染和注音层通常不是普通阅读正文，插入 wrapper 容易破坏排版、复制文本或辅助读法，应默认跳过。
 - Mozilla Readability：成熟正文抽取器会把 byline、share、related、tag、广告、元信息等作为低正文概率信号；QianCi 不做整页正文抽取，但可把这些区域作为自动标注的默认低优先级或跳过区域。
 - schema.org Product：价格、货币、SKU、GTIN、库存和评分字段是结构化交易信息，不适合插入学习标注；`description` 和用户评论正文更接近阅读内容，应保留。
+- Mozilla Readability 的负向候选包含 `banner`、`gdpr`、`popup`、`promo` 等非正文信号；QianCi 采用更精确的 class/id 命中，避免把真实文章正文误当作 cookie 或 privacy 主题浮层。
 
 ## 下一批建议边界用例
 
@@ -91,6 +93,7 @@
 - 对 SPA 继续扩展：连续 route root 替换、`history.pushState/replaceState`、快速卸载重挂和旧 tooltip 清理。
 - 对搜索结果页继续扩展：动态重排、广告插入、People also ask、站点链接和无限滚动。
 - 对电商页面继续扩展：Shopify/Amazon 风格价格块、变体 picker、折扣券、配送承诺、评价摘要和用户评论流。
+- 对同意/营销浮层继续扩展：OneTrust/Cookiebot 之外的 Didomi、TrustArc、IAB TCF CMP、地理区域化 privacy wall、动态插入和移除后的清理。
 - 对 PDF/学术阅读器继续扩展：PDF.js 多页卸载重挂、JATS 表格脚注、跨引用 hover card、参考文献筛选/折叠和论文侧栏目录。
 - 对动态 SPA 页面记录扫描切片耗时分位数，而不仅是最后一次耗时。
 - 对虚拟列表增加更接近 react-window/TanStack Virtual 的高度与滚动位置断言。
@@ -110,6 +113,7 @@
 | 表单/编辑器 | contenteditable、Monaco、CodeMirror、撤销栈、IME | 已覆盖 contenteditable 自动不标注和真实选区手动查词不改 DOM；后续补 Monaco/CodeMirror、IME、撤销栈 | P0 |
 | 搜索结果页 | 标题链接、摘要、广告、动态重排 | 结果链接点击不被阻断；搜索框不标注；重排后无重复标注 | P1 |
 | 电商/产品页 | 价格、评分、SKU、变体、购买按钮、优惠券与评论混排 | 交易控件和元信息不标注；产品描述和评论正文可标注 | P1 |
+| Cookie/营销浮层 | 同意管理器、订阅弹窗、公告条、隐私墙与正文 privacy 主题混排 | 浮层不标注；正文 cookie/privacy 主题段落仍可标注；动态插入不重复扫描 | P1 |
 | Web Components | open/closed shadow root、late attach、nested shadow、slot 分发、组件事件 | open shadow 可标注；late/nested attach 自动接入；closed shadow 不报错；slot 内容不重复标注 | P1 |
 | iframe 嵌入 | 同源/跨源限制、独立滚动上下文 | 默认跳过不报错；主文档可标注；未来 opt-in 后 frame 独立统计 | P1 |
 | 导航菜单密集页 | hover mega menu、按钮 tooltip、z-index 冲突 | 菜单展开正常；按钮文字不标注；QianCi tooltip 不遮挡关键菜单 | P1 |

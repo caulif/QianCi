@@ -79,11 +79,13 @@
 - 增加懒加载 citation popup 回归：页面初扫后动态插入 `citation-tooltip` / `role=tooltip` 引用预览时不标注。
 - 增加电商/产品页兼容：价格、SKU、评分、变体、数量、购买按钮、物流、优惠和 schema.org 交易元信息不标注，产品描述和评论正文保留标注。
 - 拆出 `scripts/smoke-assertions.ts`，复用真实浏览器 smoke 的“区域不标注”和“正文标注可见”断言，避免 `scripts/smoke-extension.ts` 继续膨胀。
+- 增加 Cookie/同意管理与营销浮层兼容：OneTrust、Cookiebot、cookie/GDPR/privacy banner、newsletter/subscribe popup、promo banner 和 announcement bar 不标注，正文中讨论 cookie/privacy 的段落保留标注。
+- 增加扫描性能调度：视口附近正文优先、滚动/选区/tooltip 交互时短暂让步、高频 mutation 降频，并在页面诊断中暴露扫描片和队列指标。
 
 ## 验证证据
 
 - `npm test` 通过。
-- 单元测试结果：41 个测试文件、279 个测试全部通过。
+- 单元测试结果：42 个测试文件、284 个测试全部通过。
 - 构建通过，生成最新 `dist`。
 - e2e smoke 通过，覆盖普通文章 hover 查词、兼容页面 click 查词、built manifest top-frame-only、fixed header/footer tooltip 避让、late Shadow DOM、Bootstrap dropdown、语义保护区、可访问名称保护、无 role 交互控件、computed hidden 恢复和虚拟滚动不漂移。
 - `npx vitest run tests/unit/content-compat.test.ts tests/unit/content-compat-article-noise.test.ts` 通过，2 个测试文件、32 个测试通过。
@@ -93,7 +95,7 @@
 - `npx vitest run tests/unit/content-compat-a11y-names.test.ts tests/unit/content-compat-code-hosts.test.ts` 通过，2 个测试文件、5 个测试通过。
 - `npx vitest run tests/unit/content-compat-spa.test.ts` 通过，1 个测试文件、2 个测试通过。
 - `npm run build && npm run test:e2e` 通过，生产 smoke 新增 GitHub/MDN/搜索与 SPA 多轮替换断言。
-- `npm test` 通过，完整链路包含 typecheck、41 个单元测试文件、279 个测试、生产构建和 e2e smoke。
+- `npm test` 通过，完整链路包含 typecheck、42 个单元测试文件、284 个测试、生产构建和 e2e smoke。
 - `npx vitest run tests/unit/content-compat-code-hosts.test.ts tests/unit/content-compat-high-density-pages.test.ts` 通过，2 个测试文件、7 个测试通过。
 - `npm run build && npm run test:e2e` 通过，生产 smoke 新增 lazy GitHub diff、SERP 动态广告/重排、绝对定位虚拟列表复用断言。
 - `npm run typecheck && npm run test:e2e` 通过，生产 smoke 覆盖拆分后的页面夹具。
@@ -107,6 +109,8 @@
 - `npm run build && npm run test:e2e` 通过，生产 smoke 新增学术论文引用/脚注/参考文献和懒加载 citation popup 断言。
 - `npx vitest run tests/unit/content-compat-commerce-pages.test.ts` 通过，1 个测试文件、1 个测试通过。
 - `npx tsc --noEmit -p tsconfig.node.json` 通过，新增 smoke assertion helper 类型检查通过。
+- `npx vitest run tests/unit/content-compat-overlays.test.ts` 先失败后通过，覆盖静态和动态插入的同意/营销浮层。
+- `npm test` 通过，完整链路覆盖扫描性能调度、生产构建和 e2e smoke；`src/content/app.ts` 已拆分到 1000 行以内。
 
 ## 下一步
 
@@ -124,3 +128,4 @@
 - 继续补充文档阅读器：PDF.js 多页卸载/重挂、学术论文 HTML 的脚注悬浮预览、公式编号和参考文献回跳。
 - 继续补充学术页面：JATS 表格脚注、arXiv 侧栏目录、跨引用 hover card、参考文献筛选/折叠。
 - 继续补充电商页面：Amazon/Shopify 风格商品页、动态优惠券、评价流懒加载、尺码/颜色选择器和库存状态切换。
+- 继续补充同意/营销浮层：Didomi、TrustArc、IAB TCF CMP、privacy wall、订阅弹窗动画结束后的清理和正文 privacy/cookie 主题误伤回归。

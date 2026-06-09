@@ -277,6 +277,20 @@ export function compatibilitySmokeHtml(contentBundle: string): string {
           </article>
         </section>
       </section>
+      <section id="overlay-noise-sample">
+        <section id="onetrust-banner-sdk">
+          <div class="ot-sdk-container">The meticulous OneTrust banner should stay untouched.</div>
+        </section>
+        <section id="CybotCookiebotDialog">
+          <p class="CookieDeclarationDialogText">The meticulous Cookiebot dialog should stay untouched.</p>
+        </section>
+        <aside class="newsletter-popup">The meticulous newsletter popup should stay untouched.</aside>
+        <aside class="announcement-bar">The meticulous announcement bar should stay untouched.</aside>
+        <section id="cookie-research">
+          <p>The meticulous article about browser cookies remains readable.</p>
+        </section>
+        <div id="late-overlay-root"></div>
+      </section>
       <section class="qianci-ignore">The meticulous sidebar should stay untouched.</section>
       <aside data-qianci-ignore="true">The meticulous widget should stay untouched.</aside>
       <section id="polite-live" aria-live="polite">The meticulous live update should stay untouched.</section>
