@@ -4,6 +4,7 @@ import {
   createProfile,
   DEFAULT_FEEDBACK_SETTINGS,
   DEFAULT_ANNOTATION_DENSITY,
+  isOnlineLookupEnabled,
   LOOKUP_TRIGGERS,
   MANUAL_SHORTCUTS,
   markWordAlwaysAnnotate,
@@ -16,6 +17,18 @@ import {
   unmarkWordAlwaysAnnotate,
   UNDERLINE_TONES
 } from '../core/profile';
+import {
+  createCustomDictionaryPanel,
+  listUserCustomEntries,
+  normalizeCustomEntryInput
+} from './customDictionaryPanel';
+import {
+  BACKUP_FORMAT_VERSION,
+  buildFullBackup,
+  mergeVocabLists,
+  parseBackupJson,
+  type BackupImportConflict
+} from '../core/backup';
 import {
   DEFAULT_OFFLINE_DICTIONARY_TIER,
   OFFLINE_DICTIONARY_PACK_OPTIONS,
@@ -38,7 +51,14 @@ import {
   saveOnlineLookupQueue,
   type OnlineLookupQueueItem
 } from '../storage/onlineLookupQueueStore';
-import { loadCustomDictionary, saveCustomDictionary, type CustomDictionary } from '../storage/customDictionaryStore';
+import {
+  loadCustomDictionary,
+  removeCustomDictionaryEntry,
+  saveCustomDictionary,
+  upsertCustomDictionary,
+  type CustomDictionary
+} from '../storage/customDictionaryStore';
+import type { DictionaryEntry } from '../core/dictionaryEntry';
 import { loadProfile, saveProfile } from '../storage/profileStore';
 import { loadSitePolicies, saveSitePolicies } from '../storage/sitePolicyStore';
 import { loadVocab, removeVocabItem, saveVocab } from '../storage/vocabStore';
@@ -62,6 +82,12 @@ export interface OptionsState {
   retryQueueCount?: number;
   sitePolicyCount?: number;
   searchQuery?: string;
+  onlineLookupEnabled?: boolean;
+  customEntries?: DictionaryEntry[];
+  customDraftWord?: string;
+  customDraftTranslation?: string;
+  customEditingWord?: string;
+  customDictionaryMessage?: string;
 }
 
 interface OptionsHandlers {
@@ -82,13 +108,21 @@ interface OptionsHandlers {
   onClearOnlineRetryQueue?: () => void | Promise<void>;
   onClearOnlineCache?: () => void | Promise<void>;
   onClearSitePolicies?: () => void | Promise<void>;
+  onOnlineLookupEnabledChange?: (enabled: boolean) => void | Promise<void>;
   onSearchChange?: (query: string) => void | Promise<void>;
   onRemoveVocab?: (word: string) => void | Promise<void>;
   onForgetKnown?: (word: string) => void | Promise<void>;
   onMarkVocabKnown?: (word: string) => void | Promise<void>;
+  onCustomDraftWordChange?: (word: string) => void | Promise<void>;
+  onCustomDraftTranslationChange?: (translation: string) => void | Promise<void>;
+  onSaveCustomEntry?: (word: string, translation: string) => void | Promise<void>;
+  onDeleteCustomEntry?: (word: string) => void | Promise<void>;
+  onStartEditCustomEntry?: (word: string) => void | Promise<void>;
   onExport?: (csv: string) => void | Promise<void>;
   onExportJson?: (json: string) => void | Promise<void>;
   onExportAnki?: (csv: string) => void | Promise<void>;
+  onExportFullBackup?: () => void | Promise<void>;
+  onImportFullBackup?: (raw: string, conflict: BackupImportConflict) => void | Promise<void>;
 }
 
 const LEVELS: Array<{ level: UserLevel; label: string }> = [
@@ -101,10 +135,59 @@ const LEVELS: Array<{ level: UserLevel; label: string }> = [
 ];
 
 const SUPPRESSION_MODES: Array<{ mode: SuppressionMode; label: string; description: string }> = [
-  { mode: 'conservative', label: '多提醒我', description: '更慢隐藏被跳过的词' },
-  { mode: 'balanced', label: '平衡', description: '保持默认节奏' },
-  { mode: 'aggressive', label: '少标一点', description: '更快减少重复标注' }
+  { mode: 'conservative', label: '更久保留提醒', description: '路过未点开的词更慢被收起' },
+  { mode: 'balanced', label: '平衡节奏', description: '保持默认收起节奏' },
+  { mode: 'aggressive', label: '更快收起重复词', description: '路过未点开的词更快减少标注' }
 ];
+
+/**
+ * 解析设置页 URL hash，返回应滚动到的元素 id。
+ */
+export function resolveOptionsSectionTarget(hash: string): string | undefined {
+  const cleaned = hash.replace(/^#/, '').trim();
+  if (!cleaned) {
+    return undefined;
+  }
+  const known = new Set([
+    'section-reading',
+    'section-words',
+    'section-strategy',
+    'section-privacy',
+    'custom-dictionary',
+    'online-retry'
+  ]);
+  return known.has(cleaned) ? cleaned : undefined;
+}
+
+/**
+ * 从完整备份 JSON 解析导入预览文案（不写入存储）。
+ */
+export function buildBackupImportPreview(raw: string):
+  | { ok: true; summary: string; exportedAt?: string }
+  | { ok: false; error: string } {
+  const parsed = parseBackupJson(raw);
+  if (!parsed.ok || !parsed.backup) {
+    return { ok: false, error: parsed.message || '备份格式无效' };
+  }
+  const backup = parsed.backup;
+  const vocabCount = backup.vocab?.length ?? 0;
+  const customCount = backup.customDictionary
+    ? Object.values(backup.customDictionary).filter((entry) => entry.source === 'custom').length
+    : 0;
+  const onlineCacheCount = backup.customDictionary
+    ? Object.values(backup.customDictionary).filter((entry) => entry.source === 'online').length
+    : 0;
+  const siteCount = backup.sitePolicies ? Object.keys(backup.sitePolicies).length : 0;
+  const hasProfile = Boolean(backup.profile);
+  const summary = [
+    `将写入：生词 ${vocabCount}`,
+    `自定义释义 ${customCount}`,
+    `联网缓存 ${onlineCacheCount}`,
+    `站点策略 ${siteCount}`,
+    hasProfile ? '学习画像 1' : '学习画像 0'
+  ].join(' · ');
+  return { ok: true, summary, exportedAt: backup.exportedAt };
+}
 
 const ONLINE_RETRY_ERROR_LABELS: Record<OnlineLookupQueueItem['lastErrorKind'], string> = {
   not_found: '未找到词条',
@@ -266,12 +349,17 @@ function escapeCsv(value: string): string {
  * @param mimeType 文件 MIME 类型。
  * @param extension 下载文件扩展名。
  */
-function downloadTextFile(content: string, mimeType: string, extension: 'csv' | 'json'): void {
+function downloadTextFile(
+  content: string,
+  mimeType: string,
+  extension: 'csv' | 'json',
+  basename = 'qianci-vocab'
+): void {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `qianci-vocab-${new Date().toISOString().slice(0, 10)}.${extension}`;
+  anchor.download = `${basename}-${new Date().toISOString().slice(0, 10)}.${extension}`;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
@@ -333,6 +421,7 @@ function sortOnlineRetryItems(items: OnlineLookupQueueItem[] = []): OnlineLookup
 function createOnlineRetryPanel(onlineRetryItems: OnlineLookupQueueItem[], handlers: OptionsHandlers): HTMLElement {
   const retryPanel = document.createElement('section');
   retryPanel.className = 'panel retry-panel';
+  retryPanel.id = 'online-retry';
 
   const retryHeader = document.createElement('div');
   retryHeader.className = 'panel-toolbar';
@@ -422,8 +511,24 @@ function createPrivacyPanel(state: OptionsState, handlers: OptionsHandlers): HTM
 
   const onlineCopy = document.createElement('p');
   onlineCopy.className = 'panel-copy';
-  onlineCopy.textContent = '只有你主动联网补查时，潜词才会发送单个单词。';
+  onlineCopy.textContent = isOnlineLookupEnabled({ onlineLookupEnabled: state.onlineLookupEnabled })
+    ? '只有你主动联网补查时，潜词才会发送单个单词。'
+    : '已关闭联网补查：本地查词和标注不受影响，也不会向第三方发送单词。';
   panel.append(onlineCopy);
+
+  const onlineToggle = document.createElement('label');
+  onlineToggle.className = 'privacy-toggle';
+  const onlineCheckbox = document.createElement('input');
+  onlineCheckbox.type = 'checkbox';
+  onlineCheckbox.dataset.qianciOnlineLookupEnabled = 'true';
+  onlineCheckbox.checked = isOnlineLookupEnabled({ onlineLookupEnabled: state.onlineLookupEnabled });
+  onlineCheckbox.addEventListener('change', () => {
+    void handlers.onOnlineLookupEnabledChange?.(onlineCheckbox.checked);
+  });
+  const onlineToggleText = document.createElement('span');
+  onlineToggleText.textContent = '允许联网补查';
+  onlineToggle.append(onlineCheckbox, onlineToggleText);
+  panel.append(onlineToggle);
 
   const actions = document.createElement('div');
   actions.className = 'privacy-actions';
@@ -433,6 +538,7 @@ function createPrivacyPanel(state: OptionsState, handlers: OptionsHandlers): HTM
   clearOnlineCacheButton.className = 'row-action-button';
   clearOnlineCacheButton.dataset.qianciClearOnlineCache = 'true';
   clearOnlineCacheButton.textContent = '清空联网缓存';
+  clearOnlineCacheButton.title = '只清除联网补查缓存，不影响你手写的自定义释义与生词表';
   clearOnlineCacheButton.addEventListener('click', () => {
     void handlers.onClearOnlineCache?.();
   });
@@ -448,7 +554,70 @@ function createPrivacyPanel(state: OptionsState, handlers: OptionsHandlers): HTM
   });
   actions.append(clearSitePoliciesButton);
 
+  const exportBackupButton = document.createElement('button');
+  exportBackupButton.type = 'button';
+  exportBackupButton.className = 'row-action-button';
+  exportBackupButton.dataset.qianciExportBackup = 'true';
+  exportBackupButton.textContent = '导出完整备份';
+  exportBackupButton.addEventListener('click', () => {
+    void handlers.onExportFullBackup?.();
+  });
+  actions.append(exportBackupButton);
+
+  const importBackupButton = document.createElement('button');
+  importBackupButton.type = 'button';
+  importBackupButton.className = 'row-action-button';
+  importBackupButton.dataset.qianciImportBackup = 'true';
+  importBackupButton.textContent = '导入备份';
+  const importInput = document.createElement('input');
+  importInput.type = 'file';
+  importInput.accept = 'application/json,.json';
+  importInput.hidden = true;
+  importInput.dataset.qianciImportBackupInput = 'true';
+  importInput.addEventListener('change', () => {
+    const file = importInput.files?.[0];
+    if (!file) {
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const raw = typeof reader.result === 'string' ? reader.result : '';
+      const preview = buildBackupImportPreview(raw);
+      if (!preview.ok) {
+        window.alert(preview.error);
+        importInput.value = '';
+        return;
+      }
+      const acceptPreview = window.confirm(
+        `${preview.summary}\n导出时间：${preview.exportedAt ?? '未知'}\n\n导入会写入本机数据，不会上传。是否继续选择冲突策略？`
+      );
+      if (!acceptPreview) {
+        importInput.value = '';
+        return;
+      }
+      const conflict = window.confirm(
+        '生词冲突时：点“确定”合并（保留更高查看次数）；点“取消”则跳过冲突词。'
+      )
+        ? 'merge'
+        : 'skip';
+      void handlers.onImportFullBackup?.(raw, conflict as BackupImportConflict);
+      importInput.value = '';
+    };
+    reader.readAsText(file);
+  });
+  importBackupButton.addEventListener('click', () => {
+    importInput.click();
+  });
+  actions.append(importBackupButton, importInput);
+
   panel.append(actions);
+
+  const cacheNote = document.createElement('p');
+  cacheNote.className = 'panel-copy';
+  cacheNote.dataset.qianciCacheVsCustom = 'true';
+  cacheNote.textContent =
+    '联网缓存与「自定义释义」分开：清空联网缓存不会删除你改过的释义；自定义释义在「我的词」中管理。';
+  panel.append(cacheNote);
   return panel;
 }
 
@@ -531,37 +700,78 @@ function createLearningReviewPanel(
 
   const intro = document.createElement('p');
   intro.className = 'panel-copy';
-  intro.textContent = '先看最值得处理的词，再进入完整词表。';
+  intro.textContent = '先看最近与高频生词（最多各 5 个），再进入完整词表。';
   panel.append(intro);
 
-  const cards = document.createElement('div');
-  cards.className = 'review-card-grid';
+  const recentList = [...vocab].sort((left, right) => right.lastSeenAt - left.lastSeenAt).slice(0, 5);
+  const frequentList = [...vocab]
+    .sort((left, right) => right.lookupCount - left.lookupCount || right.lastSeenAt - left.lastSeenAt)
+    .slice(0, 5);
+  const recentKnownList = [...knownWords].sort((left, right) => right.lastSeenAt - left.lastSeenAt).slice(0, 5);
 
-  const recentVocab = [...vocab].sort((left, right) => right.lastSeenAt - left.lastSeenAt)[0];
-  const frequentVocab = [...vocab].sort(
-    (left, right) => right.lookupCount - left.lookupCount || right.lastSeenAt - left.lastSeenAt
-  )[0];
-  const recentKnown = [...knownWords].sort((left, right) => right.lastSeenAt - left.lastSeenAt)[0];
+  const appendWordList = (heading: string, items: VocabItem[], withKnownAction: boolean): void => {
+    const block = document.createElement('div');
+    block.className = 'review-list-block';
+    const h = document.createElement('div');
+    h.className = 'skip-word-title';
+    h.textContent = heading;
+    block.append(h);
+    if (!items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'panel-copy';
+      empty.textContent = '暂无';
+      block.append(empty);
+      panel.append(block);
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = 'skip-word-chip';
+      const meta = document.createElement('span');
+      meta.textContent =
+        item.lookupCount > 0 ? `${item.word} · ${item.lookupCount} 次` : item.word;
+      row.append(meta);
+      if (withKnownAction) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'chip-action-button';
+        button.dataset.qianciReviewMarkKnown = item.word;
+        button.textContent = '标为认识';
+        button.addEventListener('click', () => {
+          void handlers.onMarkVocabKnown?.(item.word);
+        });
+        row.append(button);
+      }
+      block.append(row);
+    }
+    panel.append(block);
+  };
 
-  cards.append(
-    createReviewCard('最近查过', recentVocab ? recentVocab.word : '还没有生词'),
-    createReviewCard(
-      '查得最多',
-      frequentVocab ? `${frequentVocab.word} · ${frequentVocab.lookupCount} 次` : '还没有查词记录',
-      frequentVocab
-        ? {
-            label: '标为认识',
-            word: frequentVocab.word,
-            onClick: () => {
-              void handlers.onMarkVocabKnown?.(frequentVocab.word);
-            }
-          }
-        : undefined
-    ),
-    createReviewCard('最近认识', recentKnown ? recentKnown.word : '还没有熟词')
-  );
+  appendWordList('最近查过', recentList, true);
+  appendWordList('查得最多', frequentList, true);
 
-  panel.append(cards);
+  const knownBlock = document.createElement('div');
+  knownBlock.className = 'review-list-block';
+  const knownHeading = document.createElement('div');
+  knownHeading.className = 'skip-word-title';
+  knownHeading.textContent = '最近认识';
+  knownBlock.append(knownHeading);
+  if (!recentKnownList.length) {
+    const empty = document.createElement('p');
+    empty.className = 'panel-copy';
+    empty.textContent = '暂无';
+    knownBlock.append(empty);
+  } else {
+    for (const item of recentKnownList) {
+      const row = document.createElement('div');
+      row.className = 'skip-word-chip';
+      const meta = document.createElement('span');
+      meta.textContent = item.word;
+      row.append(meta);
+      knownBlock.append(row);
+    }
+  }
+  panel.append(knownBlock);
   return panel;
 }
 
@@ -693,8 +903,70 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
     </div>
   `;
   shell.append(header);
-  shell.append(createOnboardingPanel(state, handlers));
-  shell.append(createLearningReviewPanel(state.vocab, state.knownWords, handlers));
+
+  const nav = document.createElement('nav');
+  nav.className = 'options-nav';
+  nav.setAttribute('aria-label', '设置分组');
+  nav.dataset.qianciOptionsNav = 'true';
+  for (const item of [
+    { id: 'section-reading', label: '阅读设置' },
+    { id: 'section-words', label: '我的词' },
+    { id: 'section-strategy', label: '标注策略' },
+    { id: 'section-privacy', label: '数据与隐私' }
+  ] as const) {
+    const link = document.createElement('a');
+    link.href = `#${item.id}`;
+    link.className = 'options-nav-link';
+    link.dataset.qianciSectionLink = item.id;
+    link.textContent = item.label;
+    link.addEventListener('click', () => {
+      for (const node of nav.querySelectorAll('.options-nav-link')) {
+        node.classList.remove('is-active');
+      }
+      link.classList.add('is-active');
+    });
+    nav.append(link);
+  }
+  shell.append(nav);
+
+  const readingSection = document.createElement('section');
+  readingSection.id = 'section-reading';
+  readingSection.className = 'options-section';
+  readingSection.dataset.qianciSection = 'reading';
+  const readingTitle = document.createElement('h2');
+  readingTitle.className = 'options-section-title';
+  readingTitle.textContent = '阅读设置';
+  readingSection.append(readingTitle);
+
+  const wordsSection = document.createElement('section');
+  wordsSection.id = 'section-words';
+  wordsSection.className = 'options-section';
+  wordsSection.dataset.qianciSection = 'words';
+  const wordsTitle = document.createElement('h2');
+  wordsTitle.className = 'options-section-title';
+  wordsTitle.textContent = '我的词';
+  wordsSection.append(wordsTitle);
+
+  const strategySection = document.createElement('section');
+  strategySection.id = 'section-strategy';
+  strategySection.className = 'options-section';
+  strategySection.dataset.qianciSection = 'strategy';
+  const strategyTitle = document.createElement('h2');
+  strategyTitle.className = 'options-section-title';
+  strategyTitle.textContent = '标注策略';
+  strategySection.append(strategyTitle);
+
+  const privacySection = document.createElement('section');
+  privacySection.id = 'section-privacy';
+  privacySection.className = 'options-section';
+  privacySection.dataset.qianciSection = 'privacy';
+  const privacyTitle = document.createElement('h2');
+  privacyTitle.className = 'options-section-title';
+  privacyTitle.textContent = '数据与隐私';
+  privacySection.append(privacyTitle);
+
+  readingSection.append(createOnboardingPanel(state, handlers));
+  wordsSection.append(createLearningReviewPanel(state.vocab, state.knownWords, handlers));
 
   const searchPanel = document.createElement('section');
   searchPanel.className = 'panel';
@@ -706,14 +978,45 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.className = 'search-input';
-  searchInput.placeholder = '搜单词或释义';
+  searchInput.placeholder = '搜生词、熟词或自定义释义';
   searchInput.value = state.searchQuery ?? '';
-  searchInput.setAttribute('aria-label', '搜索词表');
+  searchInput.setAttribute('aria-label', '搜索词表与自定义释义');
   searchInput.addEventListener('input', () => {
     void handlers.onSearchChange?.(searchInput.value);
   });
-  searchPanel.append(searchInput);
-  shell.append(searchPanel);
+  const searchHint = document.createElement('p');
+  searchHint.className = 'panel-copy';
+  searchHint.textContent = '检索范围：生词表、熟词表、自定义释义。';
+  searchPanel.append(searchInput, searchHint);
+  wordsSection.append(searchPanel);
+
+  const filteredCustomEntries = (state.customEntries ?? []).filter((entry) =>
+    matchesQuery(entry.word, entry.translation)
+  );
+  wordsSection.append(
+    createCustomDictionaryPanel(
+      {
+        entries: filteredCustomEntries,
+        draftWord: state.customDraftWord,
+        draftTranslation: state.customDraftTranslation,
+        editingWord: state.customEditingWord
+      },
+      {
+        onDraftWordChange: handlers.onCustomDraftWordChange,
+        onDraftTranslationChange: handlers.onCustomDraftTranslationChange,
+        onSaveCustomEntry: handlers.onSaveCustomEntry,
+        onDeleteCustomEntry: handlers.onDeleteCustomEntry,
+        onStartEditCustomEntry: handlers.onStartEditCustomEntry
+      }
+    )
+  );
+  if (state.customDictionaryMessage) {
+    const customMessage = document.createElement('p');
+    customMessage.className = 'panel-copy custom-dictionary-message';
+    customMessage.setAttribute('role', 'status');
+    customMessage.textContent = state.customDictionaryMessage;
+    wordsSection.append(customMessage);
+  }
 
   const levelPanel = document.createElement('section');
   levelPanel.className = 'panel';
@@ -744,7 +1047,7 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
 
   levelRow.append(slider, badge);
   levelPanel.append(levelRow);
-  shell.append(levelPanel);
+  readingSection.append(levelPanel);
 
   const densityPanel = document.createElement('section');
   densityPanel.className = 'panel density-panel';
@@ -788,7 +1091,7 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
 
   densityRow.append(densitySlider, densityBadge);
   densityPanel.append(densityRow, densityMeta);
-  shell.append(densityPanel);
+  readingSection.append(densityPanel);
 
   const dictionaryPanel = document.createElement('section');
   dictionaryPanel.className = 'panel dictionary-pack-panel';
@@ -833,7 +1136,7 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   }
 
   dictionaryPanel.append(dictionaryChoices);
-  shell.append(dictionaryPanel);
+  readingSection.append(dictionaryPanel);
 
   const feedbackPanel = document.createElement('section');
   feedbackPanel.className = 'panel feedback-panel';
@@ -845,13 +1148,15 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
 
   const feedbackDescription = document.createElement('p');
   feedbackDescription.className = 'panel-copy';
+  feedbackDescription.dataset.qianciWeakFeedbackExplain = 'true';
   feedbackDescription.textContent =
-    '如果一个词多次被标注但你没有查看释义，潜词会认为你可能认识它，并逐渐减少对它的标注。';
+    '路过未点开释义的词会累计「跳过」次数；达到阈值后暂时不再标注。可在下方列表恢复提醒，或设为「总是提醒」避免再被收起。这与弹窗里「本站少标一点」不是同一件事。';
   feedbackPanel.append(feedbackDescription);
 
   const feedbackMeta = document.createElement('div');
   feedbackMeta.className = 'feedback-meta';
-  feedbackMeta.textContent = `被跳过隐藏：${state.weakHiddenCount ?? 0} 个`;
+  feedbackMeta.dataset.qianciWeakHiddenCount = String(state.weakHiddenCount ?? 0);
+  feedbackMeta.textContent = `当前因路过被收起：${state.weakHiddenCount ?? 0} 个词`;
   feedbackPanel.append(feedbackMeta);
 
   const feedbackModes = document.createElement('div');
@@ -932,7 +1237,7 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
       unpinButton.type = 'button';
       unpinButton.className = 'chip-action-button';
       unpinButton.dataset.qianciUnpinAlwaysAnnotate = item.word;
-      unpinButton.textContent = '恢复自动';
+      unpinButton.textContent = '取消固定提醒';
       unpinButton.addEventListener('click', () => {
         void handlers.onUnpinAlwaysAnnotate?.(item.word);
       });
@@ -953,9 +1258,15 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
     void handlers.onResetSkipFeedback?.();
   });
   feedbackPanel.append(resetSkipButton);
-  shell.append(feedbackPanel);
-  shell.append(createOnlineRetryPanel(onlineRetryItems, handlers));
-  shell.append(createPrivacyPanel(state, handlers));
+  strategySection.append(feedbackPanel);
+  privacySection.append(createOnlineRetryPanel(onlineRetryItems, handlers));
+  const privacyPanel = createPrivacyPanel(state, handlers);
+  const exportHelp = document.createElement('p');
+  exportHelp.className = 'panel-copy';
+  exportHelp.textContent =
+    '换电脑带走全部记录请用“导出完整备份”；只要生词表给 Anki/表格请用生词区的 Anki/CSV/JSON。';
+  privacyPanel.append(exportHelp);
+  privacySection.append(privacyPanel);
 
   const triggerPanel = document.createElement('section');
   triggerPanel.className = 'panel';
@@ -963,6 +1274,12 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   triggerTitle.className = 'panel-title';
   triggerTitle.textContent = '触发方式';
   triggerPanel.append(triggerTitle);
+
+  const triggerHint = document.createElement('p');
+  triggerHint.className = 'panel-copy';
+  triggerHint.textContent =
+    '路过就弹？改成「点击」。触控或无悬停设备会自动倾向点击查词。';
+  triggerPanel.append(triggerHint);
 
   const triggerRow = document.createElement('div');
   triggerRow.className = 'choice-row';
@@ -981,7 +1298,7 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   }
 
   triggerPanel.append(triggerRow);
-  shell.append(triggerPanel);
+  readingSection.append(triggerPanel);
 
   const tonePanel = document.createElement('section');
   tonePanel.className = 'panel';
@@ -1023,7 +1340,7 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   }
 
   tonePanel.append(toneRow);
-  shell.append(tonePanel);
+  readingSection.append(tonePanel);
 
   const manualPanel = document.createElement('section');
   manualPanel.className = 'panel';
@@ -1049,7 +1366,7 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   }
 
   manualPanel.append(shortcutRow);
-  shell.append(manualPanel);
+  readingSection.append(manualPanel);
 
   const vocabPanel = document.createElement('section');
   vocabPanel.className = 'panel';
@@ -1153,7 +1470,7 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   }
   table.append(body);
   vocabPanel.append(table);
-  shell.append(vocabPanel);
+  wordsSection.append(vocabPanel);
 
   const knownPanel = document.createElement('section');
   knownPanel.className = 'panel';
@@ -1198,8 +1515,9 @@ export function renderOptions(root: HTMLElement, state: OptionsState, handlers: 
   }
   knownTable.append(knownBody);
   knownPanel.append(knownTable);
-  shell.append(knownPanel);
+  wordsSection.append(knownPanel);
 
+  shell.append(readingSection, wordsSection, strategySection, privacySection);
   root.append(shell);
 }
 
@@ -1217,6 +1535,10 @@ export async function mountOptionsApp(root: HTMLElement, store = createDefaultSt
   let onlineLookupQueue = await loadOnlineLookupQueue(store);
   let sitePolicies: SitePolicies = await loadSitePolicies(store);
   let searchQuery = '';
+  let customDraftWord = '';
+  let customDraftTranslation = '';
+  let customEditingWord: string | undefined;
+  let customDictionaryMessage = '';
 
   const knownWords = () =>
     Object.entries(profile.words)
@@ -1241,6 +1563,33 @@ export async function mountOptionsApp(root: HTMLElement, store = createDefaultSt
       .sort((a, b) => b[1].lastSeenAt - a[1].lastSeenAt)
       .map(([word, state]) => ({ word, lastSeenAt: state.lastSeenAt }));
 
+  const applyHashTarget = (): void => {
+    if (typeof location === 'undefined') {
+      return;
+    }
+    const targetId = resolveOptionsSectionTarget(location.hash);
+    if (!targetId) {
+      return;
+    }
+    const el = root.querySelector<HTMLElement>(`#${CSS.escape(targetId)}`);
+    if (el) {
+      el.scrollIntoView({ block: 'start' });
+      el.setAttribute('data-qianci-hash-target', 'true');
+    }
+    const sectionLinkId = targetId.startsWith('section-')
+      ? targetId
+      : targetId === 'custom-dictionary'
+        ? 'section-words'
+        : targetId === 'online-retry'
+          ? 'section-privacy'
+          : undefined;
+    if (sectionLinkId) {
+      for (const node of root.querySelectorAll('.options-nav-link')) {
+        node.classList.toggle('is-active', node.getAttribute('data-qianci-section-link') === sectionLinkId);
+      }
+    }
+  };
+
   const render = (): void => {
     renderOptions(
       root,
@@ -1262,7 +1611,13 @@ export async function mountOptionsApp(root: HTMLElement, store = createDefaultSt
         onlineCacheCount: countOnlineDictionaryEntries(customDictionary),
         retryQueueCount: Object.keys(onlineLookupQueue).length,
         sitePolicyCount: Object.keys(sitePolicies).length,
-        searchQuery
+        searchQuery,
+        onlineLookupEnabled: isOnlineLookupEnabled(profile),
+        customEntries: listUserCustomEntries(customDictionary),
+        customDraftWord,
+        customDraftTranslation,
+        customEditingWord,
+        customDictionaryMessage
       },
       {
         onLevelChange: async (level) => {
@@ -1385,8 +1740,63 @@ export async function mountOptionsApp(root: HTMLElement, store = createDefaultSt
           await saveSitePolicies(store, sitePolicies);
           render();
         },
+        onOnlineLookupEnabledChange: async (enabled) => {
+          profile = { ...profile, onlineLookupEnabled: enabled };
+          await saveProfile(store, profile);
+          render();
+        },
         onSearchChange: async (query) => {
           searchQuery = query;
+          render();
+        },
+        onCustomDraftWordChange: async (word) => {
+          customDraftWord = word;
+        },
+        onCustomDraftTranslationChange: async (translation) => {
+          customDraftTranslation = translation;
+        },
+        onSaveCustomEntry: async (word, translation) => {
+          const normalized = normalizeCustomEntryInput(word, translation);
+          if ('error' in normalized) {
+            customDictionaryMessage = normalized.error;
+            render();
+            return;
+          }
+
+          customDictionary = upsertCustomDictionary(customDictionary, {
+            word: normalized.word,
+            phonetic: customDictionary[normalized.word]?.phonetic ?? '',
+            translation: normalized.translation,
+            rank: customDictionary[normalized.word]?.rank ?? 0,
+            source: 'custom'
+          });
+          await saveCustomDictionary(store, customDictionary);
+          customDraftWord = '';
+          customDraftTranslation = '';
+          customEditingWord = undefined;
+          customDictionaryMessage = `已保存 ${normalized.word} 的自定义释义`;
+          render();
+        },
+        onDeleteCustomEntry: async (word) => {
+          customDictionary = removeCustomDictionaryEntry(customDictionary, word);
+          await saveCustomDictionary(store, customDictionary);
+          if (customEditingWord === word) {
+            customDraftWord = '';
+            customDraftTranslation = '';
+            customEditingWord = undefined;
+          }
+          customDictionaryMessage = `已删除 ${word}`;
+          render();
+        },
+        onStartEditCustomEntry: async (word) => {
+          const entry = customDictionary[word];
+          if (!entry || entry.source !== 'custom') {
+            return;
+          }
+          customEditingWord = word;
+          customDraftWord = entry.word;
+          customDraftTranslation = entry.translation;
+          customDictionaryMessage = `正在编辑 ${word}`;
           render();
         },
         onRemoveVocab: async (word) => {
@@ -1436,12 +1846,83 @@ export async function mountOptionsApp(root: HTMLElement, store = createDefaultSt
         },
         onExportAnki: async (csv) => {
           downloadCsv(csv);
+        },
+        onExportFullBackup: async () => {
+          const backup = buildFullBackup({
+            profile,
+            vocab,
+            customDictionary,
+            sitePolicies
+          });
+          downloadTextFile(
+            JSON.stringify(backup, null, 2),
+            'application/json;charset=utf-8',
+            'json',
+            'qianci-backup'
+          );
+        },
+        onImportFullBackup: async (raw, conflict) => {
+          const parsed = parseBackupJson(raw);
+          if (!parsed.ok || !parsed.backup) {
+            window.alert(parsed.message);
+            return;
+          }
+
+          const shouldImport = window.confirm(
+            `将导入备份（${parsed.backup.exportedAt}）。冲突策略：${
+              conflict === 'merge' ? '合并' : conflict === 'overwrite' ? '覆盖' : '跳过'
+            }。继续？`
+          );
+          if (!shouldImport) {
+            return;
+          }
+
+          if (parsed.backup.profile) {
+            profile = parsed.backup.profile;
+            await saveProfile(store, profile);
+          }
+          if (parsed.backup.vocab) {
+            vocab =
+              conflict === 'overwrite'
+                ? parsed.backup.vocab
+                : mergeVocabLists(vocab, parsed.backup.vocab, conflict);
+            await saveVocab(store, vocab);
+          }
+          if (parsed.backup.customDictionary) {
+            if (conflict === 'overwrite') {
+              customDictionary = parsed.backup.customDictionary;
+            } else {
+              customDictionary = { ...customDictionary, ...parsed.backup.customDictionary };
+              // skip：不覆盖已有自定义词
+              if (conflict === 'skip') {
+                const previous = await loadCustomDictionary(store);
+                customDictionary = { ...parsed.backup.customDictionary, ...previous };
+              }
+            }
+            await saveCustomDictionary(store, customDictionary);
+          }
+          if (parsed.backup.sitePolicies) {
+            sitePolicies =
+              conflict === 'overwrite'
+                ? parsed.backup.sitePolicies
+                : { ...sitePolicies, ...parsed.backup.sitePolicies };
+            await saveSitePolicies(store, sitePolicies);
+          }
+
+          customDictionaryMessage = '备份导入完成';
+          render();
         }
       }
     );
+    applyHashTarget();
   };
 
   render();
+  if (typeof window !== 'undefined') {
+    window.addEventListener('hashchange', () => {
+      applyHashTarget();
+    });
+  }
 }
 
 const app = document.querySelector<HTMLElement>('#app');

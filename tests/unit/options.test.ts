@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildVocabAnkiCsv, buildVocabCsv, buildVocabJson, mountOptionsApp, renderOptions } from '../../src/options/main';
+import {
+  buildBackupImportPreview,
+  buildVocabAnkiCsv,
+  buildVocabCsv,
+  buildVocabJson,
+  mountOptionsApp,
+  renderOptions,
+  resolveOptionsSectionTarget
+} from '../../src/options/main';
+import { BACKUP_FORMAT_VERSION } from '../../src/core/backup';
 import { createMemoryStore } from '../../src/storage/browserAdapter';
 import { applySkipFeedback, createProfile } from '../../src/core/profile';
 import { loadProfile } from '../../src/storage/profileStore';
@@ -46,15 +55,27 @@ describe('options page', () => {
     expect(root.textContent).toContain('进阶');
     expect(root.textContent).toContain('深度');
     expect(root.textContent).toContain('完整');
-    expect(root.textContent).toContain('被跳过隐藏');
+    expect(root.textContent).toContain('因路过被收起');
     expect(root.textContent).toContain('abrupt');
     expect(root.textContent).toContain('熟词');
     expect(root.textContent).toContain('serendipity');
     expect(root.textContent).toContain('数据与隐私');
+    expect(root.textContent).toContain('阅读设置');
+    expect(root.textContent).toContain('我的词');
+    expect(root.textContent).toContain('标注策略');
+    expect(root.querySelector('[data-qianci-options-nav]')).not.toBeNull();
+    expect(root.querySelector('#section-words')).not.toBeNull();
+    expect(root.textContent).toContain('自定义释义');
+    expect(root.textContent).toContain('允许联网补查');
+    expect(root.textContent).toContain('导出完整备份');
     expect(root.textContent).toContain('生词 2 个 · 熟词 1 个 · 联网缓存 2 个 · 待重试 1 个 · 站点设置 3 个');
     expect(root.textContent).toContain('只有你主动联网补查时，潜词才会发送单个单词。');
+    expect(root.textContent).toContain('联网缓存与「自定义释义」分开');
+    expect(root.textContent).toContain('更快收起重复词');
     expect(root.querySelector('[data-qianci-clear-online-cache]')).not.toBeNull();
     expect(root.querySelector('[data-qianci-clear-site-policies]')).not.toBeNull();
+    expect(root.querySelector('[data-qianci-online-lookup-enabled]')).not.toBeNull();
+    expect(root.querySelector('#online-retry')).not.toBeNull();
     expect(root.querySelector('input[type="range"]')).not.toBeNull();
     expect(root.querySelectorAll('[data-qianci-tone]')).toHaveLength(5);
     expect(root.querySelectorAll('[data-qianci-lookup-trigger]')).toHaveLength(2);
@@ -97,6 +118,36 @@ describe('options page', () => {
     expect(root.textContent).toContain('最近认识');
     expect(root.textContent).toContain('serendipity');
     expect(root.querySelector('[data-qianci-review-panel]')).not.toBeNull();
+    expect(root.querySelectorAll('[data-qianci-review-mark-known]').length).toBeGreaterThan(0);
+  });
+
+  it('resolves options section hash targets and backup import preview counts', () => {
+    expect(resolveOptionsSectionTarget('#section-strategy')).toBe('section-strategy');
+    expect(resolveOptionsSectionTarget('custom-dictionary')).toBe('custom-dictionary');
+    expect(resolveOptionsSectionTarget('online-retry')).toBe('online-retry');
+    expect(resolveOptionsSectionTarget('#unknown')).toBeUndefined();
+
+    const preview = buildBackupImportPreview(
+      JSON.stringify({
+        formatVersion: BACKUP_FORMAT_VERSION,
+        exportedAt: '2026-07-10T00:00:00.000Z',
+        profile: createProfile('cet4'),
+        vocab: [{ word: 'alpha', translation: '甲', lastSeenAt: 1, lookupCount: 1 }],
+        customDictionary: {
+          beta: { word: 'beta', phonetic: '', translation: '乙', rank: 1, source: 'custom' },
+          gamma: { word: 'gamma', phonetic: '', translation: '丙', rank: 1, source: 'online' }
+        },
+        sitePolicies: { 'example.com': { mode: 'auto', updatedAt: 1 } }
+      })
+    );
+    expect(preview.ok).toBe(true);
+    if (preview.ok) {
+      expect(preview.summary).toContain('生词 1');
+      expect(preview.summary).toContain('自定义释义 1');
+      expect(preview.summary).toContain('联网缓存 1');
+      expect(preview.summary).toContain('站点策略 1');
+      expect(preview.summary).toContain('学习画像 1');
+    }
   });
 
   it('adds accessible labels to review cards, vocab tables, and export controls', () => {
@@ -180,6 +231,57 @@ describe('options page', () => {
     const profile = await loadProfile(store);
     expect(profile?.levelScore).toBeCloseTo(baseProfile.levelScore + 0.18);
     expect((await loadVocab(store))).toEqual([]);
+  });
+
+  it('saves and deletes custom dictionary translations', async () => {
+    const root = document.createElement('div');
+    const store = createMemoryStore({
+      'qianci.profile': createProfile('cet4')
+    });
+
+    await mountOptionsApp(root, store);
+
+    const wordInput = root.querySelector<HTMLInputElement>('[data-qianci-custom-word]');
+    const translationInput = root.querySelector<HTMLInputElement>('[data-qianci-custom-translation]');
+    const form = root.querySelector<HTMLFormElement>('[data-qianci-custom-dictionary-form]');
+    expect(wordInput).not.toBeNull();
+    expect(translationInput).not.toBeNull();
+    expect(form).not.toBeNull();
+
+    wordInput!.value = 'resilient';
+    translationInput!.value = '有韧性的';
+    form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await vi.waitFor(async () => {
+      const dictionary = await loadCustomDictionary(store);
+      expect(dictionary.resilient?.translation).toBe('有韧性的');
+      expect(dictionary.resilient?.source).toBe('custom');
+    });
+    expect(root.textContent).toContain('有韧性的');
+
+    root.querySelector<HTMLButtonElement>('[data-qianci-delete-custom-entry="resilient"]')?.click();
+    await vi.waitFor(async () => {
+      const dictionary = await loadCustomDictionary(store);
+      expect(dictionary.resilient).toBeUndefined();
+    });
+  });
+
+  it('toggles online lookup from the privacy panel', async () => {
+    const root = document.createElement('div');
+    const store = createMemoryStore({
+      'qianci.profile': createProfile('cet4')
+    });
+
+    await mountOptionsApp(root, store);
+
+    const checkbox = root.querySelector<HTMLInputElement>('[data-qianci-online-lookup-enabled]');
+    expect(checkbox?.checked).toBe(true);
+    checkbox!.checked = false;
+    checkbox!.dispatchEvent(new Event('change', { bubbles: true }));
+    await vi.waitFor(async () => {
+      const profile = await loadProfile(store);
+      expect(profile?.onlineLookupEnabled).toBe(false);
+    });
+    expect(root.textContent).toContain('已关闭联网补查');
   });
 
   it('filters vocab and known words by search text', () => {
@@ -272,15 +374,20 @@ describe('options page', () => {
       alwaysAnnotatedWords: [{ word: 'abrupt', lastSeenAt: 200 }]
     });
 
-    expect(root.textContent).toContain('如果一个词多次被标注但你没有查看释义');
-    expect(root.textContent).toContain('被跳过隐藏：1 个');
+    expect(root.textContent).toContain('路过未点开释义的词会累计');
+    expect(root.textContent).toContain('当前因路过被收起：1 个词');
     expect(root.textContent).toContain('coherence');
     expect(root.textContent).toContain('跳过 3 次');
     expect(root.querySelector('[data-qianci-restore-skip-feedback="coherence"]')).not.toBeNull();
     expect(root.querySelector('[data-qianci-always-annotate="coherence"]')).not.toBeNull();
     expect(root.textContent).toContain('总是提醒的词');
-    expect(root.querySelector('[data-qianci-unpin-always-annotate="abrupt"]')).not.toBeNull();
+    expect(root.querySelector('[data-qianci-unpin-always-annotate="abrupt"]')?.textContent).toContain(
+      '取消固定提醒'
+    );
     expect(root.querySelectorAll('[data-qianci-suppression-mode]')).toHaveLength(3);
+    expect(root.querySelector('[data-qianci-suppression-mode="aggressive"]')?.textContent).toContain(
+      '更快收起重复词'
+    );
     expect(root.querySelector('[data-qianci-reset-skip-feedback]')).not.toBeNull();
   });
 

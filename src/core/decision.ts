@@ -1,18 +1,36 @@
 import { getRankThresholdForLevel, normalizeRank } from './rank';
 import { getBaseLevelScore, normalizeAnnotationDensity } from './profile';
-import type { UserProfile, WordCandidate } from './types';
+import type { SiteMode, UserProfile, WordCandidate } from './types';
 import { shouldStopAnnotating } from './profile';
+import { LOW_DENSITY_SITE_MULTIPLIER } from './sitePolicy';
 
 const LEVEL_SCORE_RANK_STEP = 2800;
 
-function adaptiveThreshold(profile: UserProfile): number {
+export interface AnnotateDecisionOptions {
+  siteMode?: SiteMode;
+}
+
+function effectiveAnnotationDensity(profile: UserProfile, siteMode?: SiteMode): number {
+  const base = normalizeAnnotationDensity(profile.annotationDensity);
+  if (siteMode === 'low-density') {
+    return Math.max(0.5, Number((base * LOW_DENSITY_SITE_MULTIPLIER).toFixed(2)));
+  }
+  return base;
+}
+
+function adaptiveThreshold(profile: UserProfile, siteMode?: SiteMode): number {
   const baseThreshold = getRankThresholdForLevel(profile.level);
   const baseScore = getBaseLevelScore(profile.level);
   const offset = (profile.levelScore - baseScore) * LEVEL_SCORE_RANK_STEP;
-  return Math.max(500, Math.round((baseThreshold + offset) / normalizeAnnotationDensity(profile.annotationDensity)));
+  const density = effectiveAnnotationDensity(profile, siteMode);
+  return Math.max(500, Math.round((baseThreshold + offset) / density));
 }
 
-export function shouldAnnotateWord(profile: UserProfile, candidate: WordCandidate): boolean {
+export function shouldAnnotateWord(
+  profile: UserProfile,
+  candidate: WordCandidate,
+  options: AnnotateDecisionOptions = {}
+): boolean {
   const state = profile.words[candidate.word];
 
   if (shouldStopAnnotating(state, profile.feedbackSettings)) {
@@ -28,5 +46,5 @@ export function shouldAnnotateWord(profile: UserProfile, candidate: WordCandidat
   }
 
   const rank = normalizeRank(candidate.rank);
-  return rank > adaptiveThreshold(profile);
+  return rank > adaptiveThreshold(profile, options.siteMode);
 }

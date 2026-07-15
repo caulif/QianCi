@@ -1,4 +1,5 @@
 import type { DictionaryEntry } from '../core/dictionaryEntry';
+import { compactGloss } from '../core/dictionarySource';
 import type { OnlineLookupErrorKind, OnlineLookupResult } from '../core/messages';
 
 interface FreeDictionaryTranslation {
@@ -58,6 +59,9 @@ interface DictionaryApiDevEntry {
 
 interface FetchOnlineDictionaryOptions {
   timeoutMs?: number;
+  /** 整次查词截止时间戳；超时后尽快失败或降级。 */
+  deadlineAt?: number;
+  totalBudgetMs?: number;
 }
 
 const ONLINE_RANK = 999999;
@@ -65,11 +69,16 @@ const FREE_DICTIONARY_ENDPOINT = 'https://freedictionaryapi.com/api/v1/entries/e
 const DICTIONARY_API_DEV_ENDPOINT = 'https://api.dictionaryapi.dev/api/v2/entries/en';
 const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get';
 const LINGVA_ENDPOINT = 'https://lingva.ml/api/v1/en/zh';
+/** 无密钥公共翻译接口（client=gtx），仅作词典与其它翻译源失败后的兜底。 */
+const GOOGLE_GTX_ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
 const MYMEMORY_SERVICE = { label: 'MyMemory', url: 'https://mymemory.translated.net/' };
 const LINGVA_SERVICE = { label: 'Lingva Translate', url: 'https://lingva.ml/' };
-const DEFAULT_LOOKUP_TIMEOUT_MS = 8000;
+const GOOGLE_GTX_SERVICE = { label: 'Google Translate', url: 'https://translate.google.com/' };
+const DEFAULT_LOOKUP_TIMEOUT_MS = 5000;
+/** 整次查词总预算，避免串行瀑布叠满多次超时。 */
+const DEFAULT_TOTAL_BUDGET_MS = 10000;
 
-type TranslationService = typeof MYMEMORY_SERVICE | typeof LINGVA_SERVICE;
+type TranslationService = typeof MYMEMORY_SERVICE | typeof LINGVA_SERVICE | typeof GOOGLE_GTX_SERVICE;
 
 interface TranslationResult {
   text: string;
@@ -139,11 +148,11 @@ function buildEntry(
   return {
     word: normalized,
     phonetic,
-    translation,
+    translation: compactGloss(translation) || translation.trim(),
     rank: ONLINE_RANK,
     source: 'online',
     attribution: {
-      label: 'Wiktionary',
+      label: service.label === '机器翻译' ? '机器翻译' : 'Wiktionary',
       url: service.sourceUrl ?? `https://en.wiktionary.org/wiki/${encodeURIComponent(normalized)}`,
       serviceLabel: service.label,
       serviceUrl: service.url,
@@ -280,21 +289,35 @@ async function translateDefinitionToChinese(
   fetchImpl: typeof fetch,
   timeoutMs: number
 ): Promise<TranslationResult> {
+  const text = definition.trim();
+  if (!text) {
+    throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
+  }
+
   try {
-    const translatedText = await translateDefinitionWithMyMemory(definition, fetchImpl, timeoutMs);
+    const translatedText = await translateDefinitionWithMyMemory(text, fetchImpl, timeoutMs);
     if (translatedText) {
       return { text: translatedText, service: MYMEMORY_SERVICE };
     }
   } catch {
-    // MyMemory 是默认无账号翻译源；失败后继续尝试 Lingva 兜底。
+    // MyMemory 是默认无账号翻译源；失败后继续尝试其它免费接口。
   }
 
-  const translatedText = await translateDefinitionWithLingva(definition, fetchImpl, timeoutMs);
+  try {
+    const translatedText = await translateDefinitionWithLingva(text, fetchImpl, timeoutMs);
+    if (translatedText) {
+      return { text: translatedText, service: LINGVA_SERVICE };
+    }
+  } catch {
+    // Lingva 公共实例偶发不可用，继续 Google gtx 兜底。
+  }
+
+  const translatedText = await translateDefinitionWithGoogleGtx(text, fetchImpl, timeoutMs);
   if (!translatedText) {
     throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
   }
 
-  return { text: translatedText, service: LINGVA_SERVICE };
+  return { text: translatedText, service: GOOGLE_GTX_SERVICE };
 }
 
 async function translateDefinitionWithMyMemory(
@@ -325,6 +348,89 @@ async function translateDefinitionWithLingva(
 
   const payload = await readJsonResponse<LingvaResponse>(response);
   return payload.translation?.trim() ?? '';
+}
+
+/**
+ * 解析 Google translate_a/single 的嵌套数组响应，拼出完整中文译文。
+ *
+ * @param payload Google gtx JSON 载荷。
+ * @returns 合并后的译文；无法解析时返回空串。
+ */
+function extractGoogleGtxTranslation(payload: unknown): string {
+  if (!Array.isArray(payload) || !Array.isArray(payload[0])) {
+    return '';
+  }
+
+  const chunks: string[] = [];
+  for (const segment of payload[0]) {
+    if (Array.isArray(segment) && typeof segment[0] === 'string' && segment[0].trim()) {
+      chunks.push(segment[0]);
+    }
+  }
+
+  return chunks.join('').trim();
+}
+
+/**
+ * 使用无密钥的 Google gtx 接口把英文译成中文（仅作兜底）。
+ *
+ * @param definition 待翻译英文。
+ * @param fetchImpl fetch 实现。
+ * @param timeoutMs 超时毫秒。
+ * @returns 中文译文。
+ */
+async function translateDefinitionWithGoogleGtx(
+  definition: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number
+): Promise<string> {
+  const params = new URLSearchParams({
+    client: 'gtx',
+    sl: 'en',
+    tl: 'zh-CN',
+    dt: 't',
+    q: definition
+  });
+  const url = `${GOOGLE_GTX_ENDPOINT}?${params.toString()}`;
+  const response = await fetchWithTimeout(url, fetchImpl, timeoutMs);
+  if (!response.ok) {
+    throw createHttpFailure(response.status);
+  }
+
+  const payload = await readJsonResponse<unknown>(response);
+  return extractGoogleGtxTranslation(payload);
+}
+
+/**
+ * 词典源全部失败时，直接把单词机翻成中文作为最后底线。
+ *
+ * @param word 规范化英文单词。
+ * @param fetchImpl fetch 实现。
+ * @param timeoutMs 超时毫秒。
+ * @returns 仅含机翻释义的词条。
+ */
+async function fetchMachineTranslatedWordEntry(
+  word: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number
+): Promise<DictionaryEntry> {
+  const translationResult = await translateDefinitionToChinese(word, fetchImpl, timeoutMs);
+  const normalizedTranslation = translationResult.text.trim().toLowerCase();
+  if (!normalizedTranslation || normalizedTranslation === word) {
+    throw new OnlineLookupFailure('not_found', '在线词典暂无中文释义');
+  }
+
+  return buildEntry(
+    word,
+    '',
+    translationResult.text,
+    {
+      label: '机器翻译',
+      url: translationResult.service.url,
+      sourceUrl: translationResult.service.url
+    },
+    translationResult.service
+  );
 }
 
 async function fetchFreeDictionaryEntry(
@@ -423,24 +529,126 @@ function shouldTryDictionaryApiDevFallback(error: OnlineLookupFailure): boolean 
   );
 }
 
-export async function fetchOnlineDictionaryEntry(
+const PROVIDER_COOLDOWN_MS: Record<string, number> = {
+  rate_limited: 60_000,
+  service_unavailable: 30_000,
+  timeout: 15_000,
+  network_error: 10_000
+};
+
+const providerCooldownUntil = new Map<string, number>();
+const inflightLookups = new Map<string, Promise<OnlineLookupResult>>();
+
+/**
+ * 测试用：清空 provider 冷却与 in-flight 请求状态。
+ */
+export function resetOnlineDictionaryRuntimeState(): void {
+  providerCooldownUntil.clear();
+  inflightLookups.clear();
+}
+
+function isProviderCoolingDown(providerId: string, now: number): boolean {
+  return (providerCooldownUntil.get(providerId) ?? 0) > now;
+}
+
+function markProviderFailure(providerId: string, errorKind: OnlineLookupErrorKind, now: number): void {
+  const cooldown = PROVIDER_COOLDOWN_MS[errorKind];
+  if (!cooldown) {
+    return;
+  }
+  const until = now + cooldown;
+  const previous = providerCooldownUntil.get(providerId) ?? 0;
+  if (until > previous) {
+    providerCooldownUntil.set(providerId, until);
+  }
+}
+
+function remainingTimeoutMs(deadlineAt: number, perStepMs: number): number {
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) {
+    throw new OnlineLookupFailure('timeout', '在线词典查询超时，请稍后再试');
+  }
+  // 尊重调用方传入的短 timeout（单测用 25ms）；长超时才保留最小步长避免 0ms 竞态。
+  const floorMs = perStepMs >= 1000 ? 400 : 1;
+  return Math.max(floorMs, Math.min(perStepMs, remaining));
+}
+
+async function fetchOnlineDictionaryEntryUnshared(
   word: string,
-  fetchImpl: typeof fetch = fetch,
-  options: FetchOnlineDictionaryOptions = {}
+  fetchImpl: typeof fetch,
+  options: FetchOnlineDictionaryOptions
 ): Promise<OnlineLookupResult> {
   const normalized = normalizeWord(word);
-  const timeoutMs = options.timeoutMs ?? DEFAULT_LOOKUP_TIMEOUT_MS;
+  const perStepMs = options.timeoutMs ?? DEFAULT_LOOKUP_TIMEOUT_MS;
+  const deadlineAt =
+    options.deadlineAt ?? Date.now() + (options.totalBudgetMs ?? DEFAULT_TOTAL_BUDGET_MS);
+  const now = Date.now();
 
   try {
     let entry: DictionaryEntry;
+    let primaryError: OnlineLookupFailure | undefined;
     try {
-      entry = await fetchFreeDictionaryEntry(normalized, fetchImpl, timeoutMs);
+      if (isProviderCoolingDown('freedictionary', now)) {
+        throw new OnlineLookupFailure('service_unavailable', '在线词典暂时不可用');
+      }
+      entry = await fetchFreeDictionaryEntry(
+        normalized,
+        fetchImpl,
+        remainingTimeoutMs(deadlineAt, perStepMs)
+      );
     } catch (error) {
+      if (error instanceof OnlineLookupFailure) {
+        markProviderFailure('freedictionary', error.errorKind, Date.now());
+      }
       if (error instanceof OnlineLookupFailure && shouldTryDictionaryApiDevFallback(error)) {
+        primaryError = error;
         try {
-          entry = await fetchDictionaryApiDevEntry(normalized, fetchImpl, timeoutMs);
-        } catch {
-          throw error;
+          if (isProviderCoolingDown('dictionaryapi', Date.now())) {
+            throw new OnlineLookupFailure('service_unavailable', '在线词典暂时不可用');
+          }
+          entry = await fetchDictionaryApiDevEntry(
+            normalized,
+            fetchImpl,
+            remainingTimeoutMs(deadlineAt, perStepMs)
+          );
+        } catch (fallbackError) {
+          if (fallbackError instanceof OnlineLookupFailure) {
+            markProviderFailure('dictionaryapi', fallbackError.errorKind, Date.now());
+          }
+          // 词典都失败时，再用免费机翻直接译单词，避免“查不到就彻底没结果”。
+          try {
+            if (isProviderCoolingDown('machine-translate', Date.now())) {
+              throw new OnlineLookupFailure('service_unavailable', '在线词典暂时不可用');
+            }
+            entry = await fetchMachineTranslatedWordEntry(
+              normalized,
+              fetchImpl,
+              remainingTimeoutMs(deadlineAt, perStepMs)
+            );
+          } catch (machineError) {
+            if (machineError instanceof OnlineLookupFailure) {
+              markProviderFailure('machine-translate', machineError.errorKind, Date.now());
+            }
+            const failures = [primaryError, fallbackError, machineError].filter(
+              (item): item is OnlineLookupFailure => item instanceof OnlineLookupFailure
+            );
+            // 优先返回对用户更可操作的错误类型（未找到 > 限流/超时/网络）。
+            const preferredOrder: OnlineLookupErrorKind[] = [
+              'not_found',
+              'rate_limited',
+              'timeout',
+              'network_error',
+              'service_unavailable',
+              'parse_error'
+            ];
+            for (const kind of preferredOrder) {
+              const match = failures.find((item) => item.errorKind === kind);
+              if (match) {
+                throw match;
+              }
+            }
+            throw primaryError ?? fallbackError;
+          }
         }
       } else {
         throw error;
@@ -459,4 +667,25 @@ export async function fetchOnlineDictionaryEntry(
 
     return createFailureResult('network_error', '联网查询失败');
   }
+}
+
+/**
+ * 联网查词入口：同一单词请求单飞合并，并对失败 provider 做短冷却。
+ */
+export async function fetchOnlineDictionaryEntry(
+  word: string,
+  fetchImpl: typeof fetch = fetch,
+  options: FetchOnlineDictionaryOptions = {}
+): Promise<OnlineLookupResult> {
+  const normalized = normalizeWord(word);
+  const existing = inflightLookups.get(normalized);
+  if (existing) {
+    return existing;
+  }
+
+  const pending = fetchOnlineDictionaryEntryUnshared(normalized, fetchImpl, options).finally(() => {
+    inflightLookups.delete(normalized);
+  });
+  inflightLookups.set(normalized, pending);
+  return pending;
 }

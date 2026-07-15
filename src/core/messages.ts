@@ -24,6 +24,8 @@ export interface RescanPageMessage {
   type: typeof RESCAN_PAGE_MESSAGE_TYPE;
 }
 
+export type PageTypeHint = 'article' | 'search' | 'form' | 'code' | 'mixed' | 'unknown';
+
 export interface PageDiagnostics {
   siteMode: SiteMode;
   annotatedWords: number;
@@ -35,7 +37,20 @@ export interface PageDiagnostics {
   queuedScanNodes?: number;
   deferredScanNodes?: number;
   throttledMutationBatches?: number;
-  warnings: Array<'manual-only' | 'paused' | 'dynamic-page' | 'editor-detected' | 'form-heavy' | 'code-heavy'>;
+  pageType?: PageTypeHint;
+  isTopFrame?: boolean;
+  warnings: Array<
+    | 'manual-only'
+    | 'paused'
+    | 'low-density'
+    | 'safe'
+    | 'dynamic-page'
+    | 'editor-detected'
+    | 'form-heavy'
+    | 'code-heavy'
+    | 'search-page'
+    | 'frame-context'
+  >;
 }
 
 export type OnlineLookupErrorKind =

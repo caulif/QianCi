@@ -1,4 +1,4 @@
-import type { PageDiagnostics } from '../core/messages';
+import type { PageDiagnostics, PageTypeHint } from '../core/messages';
 import type { SiteMode } from '../core/types';
 
 export interface ContentDiagnosticsInput {
@@ -14,15 +14,14 @@ export interface ContentDiagnosticsInput {
   queuedScanNodes: number;
   deferredScanNodes: number;
   throttledMutationBatches: number;
+  isTopFrame?: boolean;
 }
 
 /**
  * Builds popup diagnostics from the current content app scan state.
- *
- * @param input Current content app state needed by diagnostics.
- * @returns Page diagnostics safe to send through extension messaging.
  */
 export function buildPageDiagnostics(input: ContentDiagnosticsInput): PageDiagnostics {
+  const pageType = detectPageType(input.doc);
   return {
     siteMode: input.siteMode,
     annotatedWords: annotatedWordCount(input.doc, input.observedRootList),
@@ -34,17 +33,12 @@ export function buildPageDiagnostics(input: ContentDiagnosticsInput): PageDiagno
     queuedScanNodes: input.queuedScanNodes,
     deferredScanNodes: input.deferredScanNodes,
     throttledMutationBatches: input.throttledMutationBatches,
-    warnings: diagnosticsWarnings(input)
+    pageType,
+    isTopFrame: input.isTopFrame ?? true,
+    warnings: diagnosticsWarnings(input, pageType)
   };
 }
 
-/**
- * Counts unique QianCi annotations across the document and observed shadow roots.
- *
- * @param doc Main page document.
- * @param observedRootList Extra roots observed by the content app.
- * @returns Number of unique annotation elements.
- */
 function annotatedWordCount(doc: Document, observedRootList: ParentNode[]): number {
   const annotatedWords = new Set<HTMLElement>();
   for (const root of [doc, ...observedRootList]) {
@@ -56,25 +50,60 @@ function annotatedWordCount(doc: Document, observedRootList: ParentNode[]): numb
 }
 
 /**
- * Produces user-facing diagnostic warning codes for the current page state.
- *
- * @param input Current content app state needed by diagnostics.
- * @returns Warning codes consumed by popup UI and diagnostic reports.
+ * 轻量页面类型识别，只用于诊断建议，不静默改模式。
  */
-function diagnosticsWarnings(input: ContentDiagnosticsInput): PageDiagnostics['warnings'] {
+export function detectPageType(doc: Document): PageTypeHint {
+  const hasSearchForm = Boolean(
+    doc.querySelector('form[role="search"], input[type="search"], .search__form, [data-testid*="search"]')
+  );
+  const resultCards = doc.querySelectorAll('.result, .search-result, .g, .serp-item').length;
+  if (hasSearchForm && resultCards >= 3) {
+    return 'search';
+  }
+
+  const preCount = doc.querySelectorAll('pre, code, .monaco-editor, .cm-editor, .blob-code').length;
+  if (preCount >= 4) {
+    return 'code';
+  }
+
+  const fieldCount = doc.querySelectorAll(
+    'textarea, input:not([type]), input[type="text"], input[type="email"], input[type="password"]'
+  ).length;
+  if (fieldCount >= 3 || doc.querySelector('[contenteditable="true"], .monaco-editor')) {
+    return 'form';
+  }
+
+  if (doc.querySelector('article, main, [role="main"]')) {
+    return 'article';
+  }
+
+  if (preCount > 0 && fieldCount > 0) {
+    return 'mixed';
+  }
+
+  return 'unknown';
+}
+
+function diagnosticsWarnings(
+  input: ContentDiagnosticsInput,
+  pageType: PageTypeHint
+): PageDiagnostics['warnings'] {
   const warnings: PageDiagnostics['warnings'] = [];
   if (input.siteMode === 'paused') {
     warnings.push('paused');
   }
-
   if (input.siteMode === 'manual-only') {
     warnings.push('manual-only');
   }
-
+  if (input.siteMode === 'low-density') {
+    warnings.push('low-density');
+  }
+  if (input.siteMode === 'safe') {
+    warnings.push('safe');
+  }
   if (input.pendingRootCount > 10 || input.throttledMutationBatches > 0) {
     warnings.push('dynamic-page');
   }
-
   if (input.doc.querySelector('[contenteditable="true"], [role="textbox"], .monaco-editor, .cm-editor, .CodeMirror')) {
     warnings.push('editor-detected');
   }
@@ -82,12 +111,17 @@ function diagnosticsWarnings(input: ContentDiagnosticsInput): PageDiagnostics['w
   const editableFields = input.doc.querySelectorAll(
     'textarea, input:not([type]), input[type="text"], input[type="search"], input[type="email"], input[type="url"]'
   );
-  if (editableFields.length >= 2) {
+  if (editableFields.length >= 2 || pageType === 'form') {
     warnings.push('form-heavy');
   }
-
-  if (input.doc.querySelectorAll('pre').length >= 2) {
+  if (input.doc.querySelectorAll('pre').length >= 2 || pageType === 'code') {
     warnings.push('code-heavy');
+  }
+  if (pageType === 'search') {
+    warnings.push('search-page');
+  }
+  if (input.isTopFrame === false) {
+    warnings.push('frame-context');
   }
 
   return warnings;

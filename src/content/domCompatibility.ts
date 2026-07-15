@@ -212,11 +212,61 @@ export const SKIP_SELECTOR = [
  * @param text Text node collected by the scan queue.
  * @returns True when the node should be ignored by automatic annotation.
  */
-export function shouldSkipTextNode(text: Text): boolean {
+export interface SkipTextNodeOptions {
+  /** 站点级自定义排除选择器。 */
+  excludeSelectors?: string[];
+  /** safe 站点模式下叠加更保守的跳过规则。 */
+  safeMode?: boolean;
+}
+
+/**
+ * 组合全局、safe 模式与站点自定义排除选择器。
+ *
+ * @param options 跳过选项。
+ * @returns 供 closest 使用的选择器字符串；无额外规则时返回空串。
+ */
+export function composeExtraSkipSelector(options: SkipTextNodeOptions = {}): string {
+  const parts: string[] = [];
+  if (options.safeMode) {
+    parts.push(
+      'table',
+      'form',
+      'header',
+      '[role="banner"]',
+      '.sidebar',
+      '.side-bar',
+      '.menu',
+      '.toolbar',
+      '.breadcrumb',
+      '.breadcrumbs'
+    );
+  }
+  for (const selector of options.excludeSelectors ?? []) {
+    const trimmed = selector.trim();
+    if (trimmed) {
+      parts.push(trimmed);
+    }
+  }
+  return parts.join(',');
+}
+
+export function shouldSkipTextNode(text: Text, options: SkipTextNodeOptions = {}): boolean {
   const parent = text.parentElement;
   if (!parent) {
     return true;
   }
+
+  const extraSelector = composeExtraSkipSelector(options);
+  if (extraSelector) {
+    try {
+      if (parent.closest(extraSelector)) {
+        return true;
+      }
+    } catch {
+      // 非法选择器已在写入策略时过滤；运行时仍兜底。
+    }
+  }
+
   return (
     Boolean(parent.closest(SKIP_SELECTOR)) ||
     hasAssignedSlotAncestor(parent) ||
@@ -412,22 +462,39 @@ export function hasInteractiveSurfaceAncestor(element: HTMLElement): boolean {
 
 /**
  * Checks common non-semantic signals used by site-specific controls.
+ * Large clickable cards with body prose are NOT treated as controls (G5).
  *
  * @param element Potential custom control container.
- * @returns True when the element is likely to handle page interaction itself.
+ * @returns True when the element is likely a compact control, not a prose container.
  */
 function isCustomInteractiveSurface(element: HTMLElement): boolean {
   if (element.matches('a[href]')) {
     return false;
   }
 
-  return (
-    element.hasAttribute('onclick') ||
-    element.hasAttribute('aria-haspopup') ||
-    element.hasAttribute('data-action') ||
-    element.hasAttribute('data-testid') && hasInteractiveClassOrText(element) ||
-    hasKeyboardTabStop(element)
-  );
+  // Menu triggers and compact action chips always win.
+  if (element.hasAttribute('aria-haspopup')) {
+    return true;
+  }
+
+  if (element.hasAttribute('data-action') && isLikelyCompactControl(element)) {
+    return true;
+  }
+
+  if (element.hasAttribute('data-testid') && hasInteractiveClassOrText(element) && isLikelyCompactControl(element)) {
+    return true;
+  }
+
+  // onclick / tabindex on large prose containers: allow body annotation.
+  if (element.hasAttribute('onclick') || hasKeyboardTabStop(element)) {
+    if (hasInteractiveClassOrText(element) && isLikelyCompactControl(element)) {
+      return true;
+    }
+    // Compact anonymous control (short label chip) still skipped.
+    return isLikelyCompactControl(element) && !hasBlockProseChild(element);
+  }
+
+  return false;
 }
 
 /**
@@ -438,7 +505,22 @@ function isCustomInteractiveSurface(element: HTMLElement): boolean {
  */
 function hasInteractiveClassOrText(element: HTMLElement): boolean {
   const signal = `${element.id} ${element.className}`.toLowerCase();
-  return /\b(button|btn|trigger|toggle|menu|dropdown|action|chip|card)\b/.test(signal);
+  return /\b(button|btn|trigger|toggle|menu|dropdown|action|chip)\b/.test(signal);
+}
+
+/**
+ * Compact controls (chips, short labels) vs large clickable article cards.
+ */
+function isLikelyCompactControl(element: HTMLElement): boolean {
+  if (hasBlockProseChild(element)) {
+    return false;
+  }
+  const text = (element.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > 0 && text.length <= 64;
+}
+
+function hasBlockProseChild(element: HTMLElement): boolean {
+  return Boolean(element.querySelector('p, article, section, li, h1, h2, h3, h4, h5, h6'));
 }
 
 /**
@@ -927,9 +1009,80 @@ export function suppressPageClick(event: MouseEvent): void {
  * Detects whether the user is still working with a non-empty text selection.
  *
  * @param doc Document that owns the annotated word.
- * @returns True when click lookup should yield to selection behavior.
+ * @returns True when any non-collapsed selection exists (legacy helper).
  */
 export function hasActiveTextSelection(doc: Document): boolean {
   const selection = doc.getSelection();
   return Boolean(selection && !selection.isCollapsed && selection.toString().trim());
+}
+
+/**
+ * Whether click-on-annotated-word should yield to an in-progress text selection.
+ * Residual selection elsewhere must NOT block lookup; multi-word drag still yields.
+ *
+ * @param doc Document that owns the selection.
+ * @param wordElement Annotated word element being clicked; optional.
+ * @returns True when click lookup should be skipped.
+ */
+export function shouldYieldClickLookupForSelection(doc: Document, wordElement?: HTMLElement | null): boolean {
+  const selection = doc.getSelection();
+  if (!selection || selection.isCollapsed) {
+    return false;
+  }
+
+  const text = selection.toString().trim();
+  if (!text) {
+    return false;
+  }
+
+  const isPhraseOrLong = /\s/.test(text) || text.length > 40;
+
+  // Without range geometry (some mocks / engines): only yield for phrase/long selections.
+  if (!selection.rangeCount) {
+    return isPhraseOrLong;
+  }
+
+  // Residual selection completely outside this annotated word: allow click lookup.
+  if (wordElement && !selectionIntersectsNode(selection, wordElement)) {
+    return false;
+  }
+
+  // Phrase / long drag that touches the word (or no word context): yield to copy selection.
+  if (isPhraseOrLong) {
+    return true;
+  }
+
+  // Single-token selection on/around the word: still open lookup.
+  return false;
+}
+
+function selectionIntersectsNode(selection: Selection, node: Node): boolean {
+  if (!selection.rangeCount) {
+    return false;
+  }
+
+  const documentRef = node.ownerDocument;
+  if (!documentRef) {
+    return false;
+  }
+
+  try {
+    const selectionRange = selection.getRangeAt(0);
+    const nodeRange = documentRef.createRange();
+    if (node.nodeType === Node.TEXT_NODE) {
+      nodeRange.selectNode(node);
+    } else {
+      nodeRange.selectNodeContents(node);
+    }
+
+    // DOM Range.compareBoundaryPoints(how, source):
+    // START_TO_END → this.end vs source.start; END_TO_START → this.start vs source.end.
+    const selectionEndsBeforeNode =
+      selectionRange.compareBoundaryPoints(Range.START_TO_END, nodeRange) <= 0;
+    const selectionStartsAfterNode =
+      selectionRange.compareBoundaryPoints(Range.END_TO_START, nodeRange) >= 0;
+    return !selectionEndsBeforeNode && !selectionStartsAfterNode;
+  } catch {
+    return false;
+  }
 }

@@ -9,7 +9,8 @@ import {
 
 describe('background worker', () => {
   async function flushBackgroundTasks(): Promise<void> {
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    // 联网查词会先读 profile 再读写重试队列，需要多冲几次微任务。
+    for (let attempt = 0; attempt < 24; attempt += 1) {
       await Promise.resolve();
     }
   }
@@ -140,6 +141,7 @@ describe('background worker', () => {
     expect(chromeMock.contextMenus.create).toHaveBeenCalledWith(
       expect.objectContaining({
         id: LOOKUP_SELECTION_MENU_ID,
+        title: '用潜词查词',
         contexts: ['selection']
       })
     );
@@ -174,6 +176,51 @@ describe('background worker', () => {
         expect.objectContaining({ ok: true, message: '已同步到词库', entry: expect.objectContaining({ word: 'serendipity' }) })
       );
     });
+  });
+
+  it('blocks online lookup when the user disabled networked enrichment', async () => {
+    const { chromeMock, storageState, messageListeners } = createChromeMock();
+    storageState['qianci.profile'] = {
+      level: 'cet4',
+      levelScore: 2.6,
+      underlineTone: 'graphite',
+      lookupTrigger: 'hover',
+      manualShortcut: 'alt',
+      annotationDensity: 1,
+      offlineDictionaryTier: 'extended',
+      onlineLookupEnabled: false,
+      feedbackSettings: {
+        skipLimit: 3,
+        skipDelayMs: 3500,
+        decayHalfLifeDays: 30,
+        suppressionMode: 'balanced'
+      },
+      words: {}
+    };
+    const lookupOnline = vi.fn(async () => ({
+      ok: true,
+      message: 'should not run',
+      entry: { word: 'blocked', phonetic: '', translation: '被拦截', rank: 1 }
+    }));
+
+    registerBackground(chromeMock as never, { lookupOnline });
+
+    const sendResponse = vi.fn();
+    messageListeners[0](
+      { type: ONLINE_LOOKUP_MESSAGE_TYPE, word: 'blocked' },
+      {} as chrome.runtime.MessageSender,
+      sendResponse
+    );
+
+    await flushBackgroundTasks();
+    expect(lookupOnline).not.toHaveBeenCalled();
+    expect(sendResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: false,
+        message: '已关闭联网补查',
+        errorKind: 'service_unavailable'
+      })
+    );
   });
 
   it('passes online lookup error kinds back to the sender', () => {
@@ -234,7 +281,7 @@ describe('background worker', () => {
     expect(sendResponse).toHaveBeenCalledWith(
       expect.objectContaining({
         queued: true,
-        message: expect.stringContaining('已加入重试队列')
+        message: expect.stringContaining('已加入重试，可稍后在弹窗查看')
       })
     );
   });
@@ -250,10 +297,27 @@ describe('background worker', () => {
         nextRetryAt: 1_500
       }
     };
+    storageState['qianci.profile'] = {
+      level: 'cet4',
+      levelScore: 2.6,
+      underlineTone: 'graphite',
+      lookupTrigger: 'hover',
+      manualShortcut: 'alt',
+      annotationDensity: 1,
+      offlineDictionaryTier: 'extended',
+      onlineLookupEnabled: true,
+      feedbackSettings: {
+        skipLimit: 3,
+        skipDelayMs: 3500,
+        decayHalfLifeDays: 30,
+        suppressionMode: 'balanced'
+      },
+      words: {}
+    };
     const lookupOnline = vi.fn(async () => ({
       ok: true,
       message: '已同步到词库',
-      entry: { word: 'serendipity', phonetic: '', translation: '意外发现', rank: 999999 }
+      entry: { word: 'serendipity', phonetic: '', translation: '意外发现', rank: 999999, source: 'online' as const }
     }));
 
     registerBackground(chromeMock as never, { lookupOnline, now: () => 2_000 });
@@ -263,6 +327,82 @@ describe('background worker', () => {
 
     expect(lookupOnline).toHaveBeenCalledWith('serendipity');
     expect(storageState['qianci.onlineLookupQueue']).toEqual({});
+    expect(storageState['qianci.customDictionary']).toEqual(
+      expect.objectContaining({
+        serendipity: expect.objectContaining({
+          translation: '意外发现',
+          source: 'online'
+        })
+      })
+    );
+    expect(storageState['qianci.profile']).toEqual(
+      expect.objectContaining({
+        words: expect.objectContaining({
+          serendipity: expect.objectContaining({ isUnknown: true, isKnown: false })
+        })
+      })
+    );
+    expect(storageState['qianci.vocab']).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ word: 'serendipity', translation: '意外发现' })
+      ])
+    );
+  });
+
+  it('persists online lookup hits into local dictionary as unknown by default', async () => {
+    const { chromeMock, messageListeners, storageState } = createChromeMock();
+    storageState['qianci.profile'] = {
+      level: 'cet4',
+      levelScore: 2.6,
+      underlineTone: 'graphite',
+      lookupTrigger: 'hover',
+      manualShortcut: 'alt',
+      annotationDensity: 1,
+      offlineDictionaryTier: 'extended',
+      onlineLookupEnabled: true,
+      feedbackSettings: {
+        skipLimit: 3,
+        skipDelayMs: 3500,
+        decayHalfLifeDays: 30,
+        suppressionMode: 'balanced'
+      },
+      words: {}
+    };
+    const lookupOnline = vi.fn(async () => ({
+      ok: true,
+      message: '已同步到词库',
+      entry: {
+        word: 'ephemeral',
+        phonetic: '',
+        translation: '短暂的',
+        rank: 999999,
+        source: 'online' as const
+      }
+    }));
+
+    registerBackground(chromeMock as never, { lookupOnline, now: () => 5_000 });
+
+    const sendResponse = vi.fn();
+    messageListeners[0](
+      { type: ONLINE_LOOKUP_MESSAGE_TYPE, word: 'Ephemeral' },
+      {} as chrome.runtime.MessageSender,
+      sendResponse
+    );
+    await flushBackgroundTasks();
+
+    expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+    expect(storageState['qianci.customDictionary']).toEqual(
+      expect.objectContaining({
+        ephemeral: expect.objectContaining({ translation: '短暂的', source: 'online' })
+      })
+    );
+    expect(storageState['qianci.profile']).toEqual(
+      expect.objectContaining({
+        words: expect.objectContaining({
+          ephemeral: expect.objectContaining({ isUnknown: true })
+        })
+      })
+    );
   });
 
   it('recreates retry alarm from persisted queue on startup', async () => {

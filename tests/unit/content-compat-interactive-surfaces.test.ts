@@ -58,16 +58,18 @@ describe('content compatibility interactive surfaces', () => {
     vi.restoreAllMocks();
   });
 
-  it('skips clickable custom controls that do not declare ARIA roles', async () => {
+  it('skips compact custom controls but annotates large onclick prose containers (G5)', async () => {
     document.body.innerHTML = `
       <main>
         <article>
           <p>The meticulous article paragraph remains readable.</p>
         </article>
-        <div id="onclick-card" onclick="window.cardClicked = true">The meticulous clickable card should stay untouched.</div>
-        <div id="tabindex-card" tabindex="0">The meticulous focusable card should stay untouched.</div>
+        <div id="onclick-card" class="feed-card" onclick="window.cardClicked = true">
+          <p>The meticulous product story lives inside a large clickable feed card and should still be annotated for reading.</p>
+        </div>
+        <div id="tabindex-chip" tabindex="0" class="chip">Open</div>
         <div id="menu-trigger" aria-haspopup="menu">The meticulous menu trigger should stay untouched.</div>
-        <span id="action-chip" data-action="open-menu">The meticulous action chip should stay untouched.</span>
+        <span id="action-chip" data-action="open-menu">Open menu</span>
       </main>
     `;
 
@@ -76,8 +78,10 @@ describe('content compatibility interactive surfaces', () => {
     await flushScanWork();
 
     expect(document.querySelector('article [data-qianci-word="meticulous"]')).not.toBeNull();
-    expect(document.querySelector('#onclick-card [data-qianci-word]')).toBeNull();
-    expect(document.querySelector('#tabindex-card [data-qianci-word]')).toBeNull();
+    // Large clickable card with block prose: body text may be annotated.
+    expect(document.querySelector('#onclick-card [data-qianci-word="meticulous"]')).not.toBeNull();
+    // Compact chip / menu / action control: still skipped.
+    expect(document.querySelector('#tabindex-chip [data-qianci-word]')).toBeNull();
     expect(document.querySelector('#menu-trigger [data-qianci-word]')).toBeNull();
     expect(document.querySelector('#action-chip [data-qianci-word]')).toBeNull();
     app.dispose();

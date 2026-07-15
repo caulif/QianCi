@@ -24,13 +24,15 @@
 
 ## 联网请求
 
-只有在用户主动触发“联网查询”时，扩展才会向第三方服务发起请求。
+只有在用户主动触发“联网查询”，并且设置里仍开启“允许联网补查”时，扩展才会向第三方服务发起请求。关闭后，本地标注和本地查词不受影响。
 
 当前可能涉及的第三方服务：
 
 - FreeDictionaryAPI
+- dictionaryapi.dev
 - MyMemory Translation API
-- Lingva Translate（仅在 MyMemory 暂不可用时作为翻译回退）
+- Lingva Translate（MyMemory 不可用时的翻译回退）
+- Google Translate 公共接口（`client=gtx`，仅在其它词典/翻译源都失败时作为最后兜底）
 
 发送内容只包含完成查词所需的最小文本，例如：
 

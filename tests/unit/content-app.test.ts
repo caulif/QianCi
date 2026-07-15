@@ -60,6 +60,13 @@ describe('content app', () => {
     }
   }
 
+  /** Drain nested async lookup/hover chains (resolveLocalEntry + online). */
+  async function flushLookupWork(): Promise<void> {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await Promise.resolve();
+    }
+  }
+
   async function flushSingleScanSlice(): Promise<void> {
     vi.advanceTimersByTime(RESCAN_DELAY_MS);
     await Promise.resolve();
@@ -132,12 +139,12 @@ describe('content app', () => {
     expect(target.getAttribute('aria-expanded')).toBe('false');
 
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     expect(tooltipText()).toContain('不唐突的');
     expect(tooltipText()).toContain('认识');
     expect(tooltipButtonByText('认识')?.getAttribute('aria-label')).toBe('标记 unobtrusive 为认识');
-    expect(tooltipButtonByText('继续提醒')?.getAttribute('aria-label')).toBe('继续提醒 unobtrusive');
+    expect(tooltipButtonByText('总是提醒')?.getAttribute('aria-label')).toBe('总是提醒 unobtrusive');
     app.dispose();
   });
 
@@ -162,7 +169,7 @@ describe('content app', () => {
     await flushScanWork();
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     expect(target.getAttribute('aria-expanded')).toBe('true');
 
@@ -195,11 +202,11 @@ describe('content app', () => {
     const firstWord = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     const secondWord = document.querySelector('[data-qianci-word="meticulous"]') as HTMLElement;
     firstWord.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     expect(firstWord.getAttribute('aria-expanded')).toBe('true');
 
     secondWord.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     expect(firstWord.getAttribute('aria-expanded')).toBe('false');
     expect(secondWord.getAttribute('aria-expanded')).toBe('true');
@@ -227,7 +234,7 @@ describe('content app', () => {
     await flushScanWork();
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltipHost = document.querySelector('[data-qianci-tooltip]') as HTMLElement | null;
     const shadowText = tooltipHost?.shadowRoot?.textContent;
@@ -264,18 +271,33 @@ describe('content app', () => {
     await flushScanWork();
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
-    const feedbackButton = tooltipButtonByText('释义不准') as HTMLButtonElement | null;
+    const moreButton = tooltipButtonByText('更多') as HTMLButtonElement | null;
+    expect(moreButton).not.toBeNull();
+    moreButton?.click();
+    const feedbackButton = tooltipButtonByText('改释义') as HTMLButtonElement | null;
     expect(feedbackButton).not.toBeNull();
     feedbackButton?.click();
     await Promise.resolve();
 
+    const input = tooltipHost()?.shadowRoot?.querySelector(
+      '[data-qianci-edit-translation-input]'
+    ) as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    input!.value = '不显眼的（自定义）';
+    tooltipHost()
+      ?.shadowRoot?.querySelector<HTMLFormElement>('[data-qianci-edit-translation]')
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await Promise.resolve();
+
     expect(onTranslationFeedback).toHaveBeenCalledWith(
       'unobtrusive',
-      expect.objectContaining({ translation: '不唐突的；不显眼的' })
+      expect.objectContaining({ translation: '不唐突的；不显眼的' }),
+      '不显眼的（自定义）'
     );
-    expect(tooltipText()).toContain('已记录释义问题');
+    expect(tooltipText()).toContain('已保存自定义释义');
+    expect(tooltipText()).toContain('不显眼的（自定义）');
     app.dispose();
   });
 
@@ -300,7 +322,7 @@ describe('content app', () => {
     await flushScanWork();
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const host = tooltipHost() as HTMLElement;
     const card = host.shadowRoot?.querySelector('.qianci-tooltip-card') as HTMLElement;
@@ -337,7 +359,7 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltip = tooltipHost() as HTMLElement;
     const closeButton = tooltipButtonByLabel('关闭查词卡片') as HTMLButtonElement;
@@ -375,7 +397,7 @@ describe('content app', () => {
     await flushScanWork();
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const styleText = tooltipHost()?.shadowRoot?.querySelector('style')?.textContent ?? '';
     expect(styleText).toContain('min-width: 32px');
@@ -409,7 +431,7 @@ describe('content app', () => {
     await flushScanWork();
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     const tooltip = tooltipHost() as HTMLElement;
     expect(tooltip.style.getPropertyValue('--qianci-focus-color')).toBe('#5f7db9');
 
@@ -474,7 +496,7 @@ describe('content app', () => {
     });
 
     document.dispatchEvent(new MouseEvent('mouseup', { altKey: true, bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     expect(onLookup).toHaveBeenCalledWith(
       'serendipity',
@@ -509,11 +531,11 @@ describe('content app', () => {
     });
 
     document.dispatchEvent(new MouseEvent('mouseup', { altKey: true, bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     expect(onLookup).not.toHaveBeenCalled();
 
     document.dispatchEvent(new MouseEvent('mouseup', { ctrlKey: true, bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     expect(onLookup).toHaveBeenCalledWith(
       'serendipity',
@@ -546,11 +568,11 @@ describe('content app', () => {
 
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     expect(onLookup).not.toHaveBeenCalled();
 
     target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     expect(onLookup).toHaveBeenCalledWith(
       'unobtrusive',
@@ -585,7 +607,7 @@ describe('content app', () => {
 
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltip = tooltipHost() as HTMLElement;
     expect(tooltipText()).toContain('认识');
@@ -593,8 +615,8 @@ describe('content app', () => {
 
     target.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
     tooltip.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    vi.advanceTimersByTime(180);
-    await Promise.resolve();
+    vi.advanceTimersByTime(500);
+    await flushLookupWork();
 
     expect(tooltip.style.display).toBe('block');
 
@@ -606,6 +628,44 @@ describe('content app', () => {
     expect(tooltip.style.display).toBe('block');
     expect(tooltipText()).toContain('已标为认识');
     expect(tooltipButtonByText('撤销')).not.toBeNull();
+    app.dispose();
+  });
+
+  it('does not hide the tooltip while the pointer is still over the annotated word', async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<article><p>The unobtrusive tool was meticulous.</p></article>';
+    const dictionary = {
+      unobtrusive: { word: 'unobtrusive', phonetic: '/ˌʌnəbˈtruːsɪv/', translation: '不唐突的；不显眼的', rank: 8100 }
+    };
+
+    const app = createContentApp(document, {
+      profile: createProfile('starter'),
+      ranks: { unobtrusive: 8100 },
+      resolveEntry: createResolver(dictionary),
+      lookupOnline: createOnlineLookup(),
+      onKnown: vi.fn(),
+      onLookup: vi.fn(),
+      onSkip: vi.fn()
+    });
+    app.rescan();
+    await flushScanWork();
+
+    const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
+    Object.defineProperty(target, 'matches', {
+      configurable: true,
+      value: (selector: string) => selector === ':hover'
+    });
+
+    target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    await flushLookupWork();
+    const tooltip = tooltipHost() as HTMLElement;
+    expect(tooltip.style.display).toBe('block');
+
+    target.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+    vi.advanceTimersByTime(500);
+    await flushLookupWork();
+
+    expect(tooltip.style.display).toBe('block');
     app.dispose();
   });
 
@@ -630,14 +690,14 @@ describe('content app', () => {
 
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     const tooltip = tooltipHost() as HTMLElement;
     const knownButton = tooltipButtonByText('认识') as HTMLButtonElement;
     knownButton.focus();
 
     target.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
-    vi.advanceTimersByTime(180);
-    await Promise.resolve();
+    vi.advanceTimersByTime(500);
+    await flushLookupWork();
 
     expect(tooltip.style.display).toBe('block');
     expect(tooltip.shadowRoot?.activeElement).toBe(knownButton);
@@ -666,18 +726,18 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     const afterButton = document.querySelector('#after') as HTMLButtonElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     const tooltip = tooltipHost() as HTMLElement;
     const knownButton = tooltipButtonByText('认识') as HTMLButtonElement;
     knownButton.focus();
     target.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
-    vi.advanceTimersByTime(180);
-    await Promise.resolve();
+    vi.advanceTimersByTime(500);
+    await flushLookupWork();
     expect(tooltip.style.display).toBe('block');
 
     afterButton.focus();
-    vi.advanceTimersByTime(180);
-    await Promise.resolve();
+    vi.advanceTimersByTime(500);
+    await flushLookupWork();
 
     expect(tooltip.style.display).toBe('none');
     app.dispose();
@@ -704,7 +764,7 @@ describe('content app', () => {
     await flushScanWork();
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltip = tooltipHost() as HTMLElement;
     expect(tooltip.style.display).toBe('block');
@@ -737,11 +797,11 @@ describe('content app', () => {
     await flushScanWork();
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     expect(onLookup).not.toHaveBeenCalled();
 
     target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     const tooltip = tooltipHost() as HTMLElement;
     expect(tooltip.style.display).toBe('block');
 
@@ -818,7 +878,7 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltip = tooltipHost() as HTMLElement;
     expect(tooltip.style.display).toBe('block');
@@ -854,7 +914,7 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     beforeButton.focus();
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltip = tooltipHost() as HTMLElement;
     expect(tooltip.style.display).toBe('block');
@@ -933,7 +993,7 @@ describe('content app', () => {
 
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     const tooltip = tooltipHost() as HTMLElement;
     expect(tooltip.style.display).toBe('block');
 
@@ -978,9 +1038,9 @@ describe('content app', () => {
 
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
-    const keepButton = tooltipButtonByText('继续提醒');
+    const keepButton = tooltipButtonByText('总是提醒');
     expect(keepButton).not.toBeNull();
     keepButton?.click();
     await Promise.resolve();
@@ -999,7 +1059,7 @@ describe('content app', () => {
     );
     expect(document.querySelector('[data-qianci-word="unobtrusive"]')).not.toBeNull();
     expect((tooltipHost() as HTMLElement).style.display).toBe('block');
-    expect(tooltipText()).toContain('会继续提醒');
+    expect(tooltipText()).toContain('已设为总是提醒');
     expect(tooltipButtonByText('撤销')).not.toBeNull();
     app.dispose();
   });
@@ -1040,9 +1100,9 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
-    const keepButton = tooltipButtonByText('继续提醒') as HTMLButtonElement;
+    const keepButton = tooltipButtonByText('总是提醒') as HTMLButtonElement;
     expect(tooltipHost()?.shadowRoot?.activeElement).toBe(tooltipButtonByText('认识'));
     keepButton.focus();
     keepButton.click();
@@ -1050,7 +1110,7 @@ describe('content app', () => {
 
     expect(onAlwaysAnnotate).toHaveBeenCalledWith('unobtrusive', expect.anything());
     expect((tooltipHost() as HTMLElement).style.display).toBe('block');
-    expect(tooltipText()).toContain('会继续提醒');
+    expect(tooltipText()).toContain('已设为总是提醒');
     expect(document.activeElement).toBe(target);
     app.dispose();
   });
@@ -1080,7 +1140,7 @@ describe('content app', () => {
     const nextWord = document.querySelector('[data-qianci-word="meticulous"]') as HTMLElement;
     firstWord.focus();
     firstWord.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const knownButton = tooltipButtonByText('认识') as HTMLButtonElement;
     knownButton.click();
@@ -1116,7 +1176,7 @@ describe('content app', () => {
     const firstWord = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     beforeButton.focus();
     firstWord.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const knownButton = tooltipButtonByText('认识') as HTMLButtonElement;
     knownButton.click();
@@ -1150,7 +1210,7 @@ describe('content app', () => {
     const readingContainer = document.querySelector('#story p') as HTMLElement;
     onlyWord.focus();
     onlyWord.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const knownButton = tooltipButtonByText('认识') as HTMLButtonElement;
     knownButton.click();
@@ -1189,20 +1249,11 @@ describe('content app', () => {
     });
 
     document.dispatchEvent(new MouseEvent('mouseup', { altKey: true, bubbles: true }));
-    await Promise.resolve();
-
-    expect(tooltipText()).toContain('词库里没有');
-    expect(tooltipHost()?.getAttribute('aria-busy')).toBe('false');
-    expect(tooltipHost()?.shadowRoot?.querySelector('[role="status"]')).toBeNull();
-    const lookupButton = tooltipButton() as HTMLButtonElement;
-    expect(lookupButton.textContent).toContain('联网查询');
-    expect(lookupButton.getAttribute('aria-label')).toBe('联网查询 serendipity');
-    expect(lookupButton.onclick).not.toBeNull();
-    lookupButton.onclick?.(new MouseEvent('click') as never);
-    await Promise.resolve();
+    await flushLookupWork();
     await Promise.resolve();
     await Promise.resolve();
 
+    // A2: selection miss auto-starts online lookup without a second button click.
     expect(lookupOnline).toHaveBeenCalledWith('serendipity');
     expect(onLookup).toHaveBeenCalledWith(
       'serendipity',
@@ -1215,15 +1266,73 @@ describe('content app', () => {
     app.dispose();
   });
 
-  it('focuses the online lookup action and returns focus for keyboard-opened missing-word cards', async () => {
+  it('underlines online-looked-up unknown words even when rank index has no entry', async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML =
+      '<article><p>One serendipity here.</p><p>Another serendipity there.</p></article>';
+    const onLookup = vi.fn();
+    const lookupOnline = createOnlineLookup({
+      word: 'serendipity',
+      phonetic: '',
+      translation: '意外之喜',
+      rank: 999999,
+      source: 'online'
+    });
+
+    vi.spyOn(document, 'getSelection').mockReturnValue({
+      toString: () => 'serendipity',
+      rangeCount: 0
+    } as Selection);
+
+    const app = createContentApp(document, {
+      profile: createProfile('professional'),
+      ranks: {},
+      resolveEntry: createResolver({}),
+      lookupOnline,
+      onKnown: vi.fn(),
+      onLookup,
+      onSkip: vi.fn()
+    });
+
+    app.rescan();
+    await flushScanWork();
+    expect(document.querySelectorAll('[data-qianci-word="serendipity"]')).toHaveLength(0);
+
+    document.dispatchEvent(new MouseEvent('mouseup', { altKey: true, bubbles: true }));
+    await flushLookupWork();
+    await flushScanWork();
+
+    expect(onLookup).toHaveBeenCalledWith(
+      'serendipity',
+      'selection',
+      expect.objectContaining({
+        words: expect.objectContaining({
+          serendipity: expect.objectContaining({ isUnknown: true, isKnown: false })
+        })
+      }),
+      expect.objectContaining({ source: 'online' })
+    );
+    const annotated = document.querySelectorAll('[data-qianci-word="serendipity"]');
+    expect(annotated.length).toBeGreaterThanOrEqual(1);
+    app.dispose();
+  });
+
+  it('focuses close and returns focus for keyboard-opened auto-online loading cards', async () => {
     vi.useFakeTimers();
     document.body.innerHTML = '<article><p>The unobtrusive tool was meticulous.</p></article>';
+    let resolveLookup: (value: { message: string }) => void = () => undefined;
+    const lookupOnline = vi.fn(
+      () =>
+        new Promise<{ message: string }>((resolve) => {
+          resolveLookup = resolve;
+        })
+    );
 
     const app = createContentApp(document, {
       profile: createProfile('starter'),
       ranks: { unobtrusive: 8100 },
       resolveEntry: createResolver({}),
-      lookupOnline: createOnlineLookup(),
+      lookupOnline,
       onKnown: vi.fn(),
       onLookup: vi.fn(),
       onSkip: vi.fn()
@@ -1234,25 +1343,32 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltip = tooltipHost() as HTMLElement;
-    const lookupButton = tooltipButton() as HTMLButtonElement;
-    expect(tooltipText()).toContain('词库里没有');
-    expect(lookupButton.textContent).toContain('联网查询');
-    expect(tooltip.shadowRoot?.activeElement).toBe(lookupButton);
+    expect(tooltipText()).toMatch(/正在联网|本地词库未收录/);
+    expect(lookupOnline).toHaveBeenCalled();
+    const closeButton = tooltipButtonByLabel('关闭查词卡片') as HTMLButtonElement;
+    expect(tooltip.shadowRoot?.activeElement).toBe(closeButton);
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 
     expect(tooltip.style.display).toBe('none');
     expect(document.activeElement).toBe(target);
+    resolveLookup({ message: '暂时没有找到词条' });
     app.dispose();
   });
 
-  it('provides an explicit close button for keyboard-opened missing-word cards', async () => {
+  it('provides an explicit close button while auto-online lookup is in flight', async () => {
     vi.useFakeTimers();
     document.body.innerHTML = '<article><p>The unobtrusive tool was meticulous.</p></article>';
-    const lookupOnline = createOnlineLookup();
+    let resolveLookup: (value: { message: string }) => void = () => undefined;
+    const lookupOnline = vi.fn(
+      () =>
+        new Promise<{ message: string }>((resolve) => {
+          resolveLookup = resolve;
+        })
+    );
     const onLookup = vi.fn();
 
     const app = createContentApp(document, {
@@ -1270,19 +1386,20 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltip = tooltipHost() as HTMLElement;
     const closeButton = tooltipButtonByLabel('关闭查词卡片') as HTMLButtonElement;
-    expect(tooltipText()).toContain('词库里没有');
+    expect(tooltipText()).toMatch(/正在联网|本地词库未收录/);
     expect(closeButton).not.toBeNull();
+    expect(lookupOnline).toHaveBeenCalled();
 
     closeButton.click();
 
     expect(tooltip.style.display).toBe('none');
     expect(document.activeElement).toBe(target);
-    expect(lookupOnline).not.toHaveBeenCalled();
     expect(onLookup).not.toHaveBeenCalled();
+    resolveLookup({ message: '暂时没有找到词条' });
     app.dispose();
   });
 
@@ -1306,17 +1423,12 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await flushLookupWork();
     await Promise.resolve();
 
-    const lookupButton = tooltipButtonByText('联网查询') as HTMLButtonElement;
-    expect(tooltipHost()?.shadowRoot?.activeElement).toBe(lookupButton);
-    lookupButton.click();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    const retryButton = tooltipButtonByText('联网查询') as HTMLButtonElement;
     expect(lookupOnline).toHaveBeenCalledWith('unobtrusive');
     expect(tooltipText()).toContain('暂时没有找到词条');
+    const retryButton = tooltipButtonByText('联网查询') as HTMLButtonElement;
     expect(tooltipHost()?.shadowRoot?.activeElement).toBe(retryButton);
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -1349,11 +1461,7 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
-
-    const lookupButton = tooltipButtonByText('联网查询') as HTMLButtonElement;
-    lookupButton.click();
-    await Promise.resolve();
+    await flushLookupWork();
     await Promise.resolve();
 
     const retryButton = tooltipButtonByText('联网查询') as HTMLButtonElement;
@@ -1392,15 +1500,12 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
-
-    tooltipButtonByText('联网查询')?.click();
-    await Promise.resolve();
+    await flushLookupWork();
     await Promise.resolve();
 
     expect(lookupOnline).toHaveBeenCalledWith('unobtrusive');
     expect(tooltipText()).toContain('在线词典请求过于频繁');
-    expect(tooltipText()).toContain('已加入重试队列，稍后自动重试');
+    expect(tooltipText()).toContain('已加入重试，可稍后在弹窗查看');
     expect(tooltipText()).not.toContain('联网查询失败');
     app.dispose();
   });
@@ -1431,15 +1536,11 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
-
-    const lookupButton = tooltipButtonByText('联网查询') as HTMLButtonElement;
-    lookupButton.click();
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltip = tooltipHost() as HTMLElement;
     const closeButton = tooltipButtonByLabel('关闭查词卡片') as HTMLButtonElement;
-    expect(tooltipText()).toContain('正在联网查询');
+    expect(tooltipText()).toMatch(/正在联网|本地词库未收录/);
     expect(closeButton).not.toBeNull();
     expect(tooltip.shadowRoot?.activeElement).toBe(closeButton);
 
@@ -1449,7 +1550,7 @@ describe('content app', () => {
     expect(document.activeElement).toBe(target);
     resolveLookup({ message: '暂时没有找到词条' });
     await Promise.resolve();
-    await Promise.resolve();
+    await flushLookupWork();
     expect(tooltip.style.display).toBe('none');
     app.dispose();
   });
@@ -1480,16 +1581,12 @@ describe('content app', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.focus();
     target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    await Promise.resolve();
-
-    const lookupButton = tooltipButtonByText('联网查询') as HTMLButtonElement;
-    lookupButton.click();
-    await Promise.resolve();
+    await flushLookupWork();
 
     const tooltip = tooltipHost() as HTMLElement;
     const loadingStatus = tooltip.shadowRoot?.querySelector('[role="status"]') as HTMLElement;
     expect(tooltip.getAttribute('aria-busy')).toBe('true');
-    expect(loadingStatus.textContent).toContain('正在联网查询');
+    expect(loadingStatus.textContent).toMatch(/正在联网|本地词库未收录/);
     expect(loadingStatus.getAttribute('aria-live')).toBe('polite');
 
     resolveLookup({ message: '暂时没有找到词条' });
@@ -1683,7 +1780,7 @@ describe('content app', () => {
     expect(document.querySelector('[data-qianci-word="meticulous"]')).toBeNull();
 
     document.dispatchEvent(new MouseEvent('mouseup', { altKey: true, bubbles: true }));
-    await Promise.resolve();
+    await flushLookupWork();
     expect(onLookup).toHaveBeenCalledWith(
       'serendipity',
       'selection',
@@ -2075,3 +2172,4 @@ describe('content app', () => {
     app.dispose();
   });
 });
+

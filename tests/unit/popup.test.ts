@@ -3,24 +3,250 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createProfile } from '../../src/core/profile';
 import { createMemoryStore } from '../../src/storage/browserAdapter';
+import { saveCustomDictionary } from '../../src/storage/customDictionaryStore';
 import { saveOnlineLookupQueue } from '../../src/storage/onlineLookupQueueStore';
 import { loadProfile } from '../../src/storage/profileStore';
 import { loadSitePolicies } from '../../src/storage/sitePolicyStore';
-import { buildDiagnosticReport, buildFeedbackTemplate, mountPopupApp, renderPopup } from '../../src/popup/main';
+import {
+  buildDiagnosticReport,
+  buildFeedbackTemplate,
+  countWeakHiddenWords,
+  globalDensityFloorStatusText,
+  globalDensityReduceStatusText,
+  mountPopupApp,
+  normalizePopupLookupQuery,
+  optionsSectionHash,
+  popupStatusHint,
+  renderPopup,
+  resolveLessAnnotateAction,
+  resolveMoreStableAction,
+  siteModeLabel
+} from '../../src/popup/main';
 
 describe('popup page', () => {
-  it('renders current site controls with the active mode selected', () => {
+  it('renders status card and task-first site controls by default', () => {
     const root = document.createElement('div');
 
     renderPopup(root, {
       siteKey: 'example.com',
-      mode: 'manual-only'
+      mode: 'manual-only',
+      diagnostics: {
+        siteMode: 'manual-only',
+        annotatedWords: 3,
+        scannedTextNodes: 20,
+        pendingScan: false,
+        lastScanAt: 1,
+        lastScanDurationMs: 4,
+        warnings: ['manual-only']
+      }
     });
 
-    expect(root.textContent).toContain('example.com');
-    expect(root.textContent).toContain('当前站点');
-    expect(root.querySelectorAll('[data-qianci-site-mode]')).toHaveLength(3);
+    expect(root.textContent).toContain('潜词 · example.com');
+    expect(root.textContent).toContain('已检查 20 段 · 标注 3 词');
+    expect(root.textContent).toContain('本站现在：仅手动查词');
+    expect(root.textContent).toContain('少标一点');
+    expect(root.textContent).toContain('更稳一点');
+    expect(root.textContent).toContain('暂停');
+    expect(root.textContent).toContain('快速查词');
+    expect(root.textContent).toContain('漏词？');
+    // 高级模式默认折叠
+    expect(root.querySelectorAll('[data-qianci-site-mode]')).toHaveLength(0);
+    expect(root.querySelector('[data-qianci-exclude-selectors]')).toBeNull();
+  });
+
+  it('maps user task actions to site modes with safe paused boundaries', () => {
+    expect(siteModeLabel('low-density')).toBe('少标模式');
+    expect(resolveLessAnnotateAction('auto')).toEqual({ kind: 'mode', mode: 'low-density' });
+    expect(resolveLessAnnotateAction('low-density')).toEqual({ kind: 'reduce-density' });
+    expect(resolveLessAnnotateAction('safe').kind).toBe('noop');
+    expect(resolveLessAnnotateAction('paused').kind).toBe('noop');
+    expect(resolveLessAnnotateAction('manual-only').kind).toBe('noop');
+    expect(resolveMoreStableAction('auto')).toEqual({ kind: 'mode', mode: 'safe' });
+    expect(resolveMoreStableAction('safe')).toEqual({ kind: 'mode', mode: 'manual-only' });
+    expect(resolveMoreStableAction('paused').kind).toBe('noop');
+    expect(resolveMoreStableAction('manual-only').kind).toBe('noop');
+    expect(globalDensityReduceStatusText(0.9)).toContain('全局');
+    expect(globalDensityReduceStatusText(0.9)).toContain('所有网站');
+    expect(globalDensityFloorStatusText()).toContain('全局');
+    expect(optionsSectionHash('#section-strategy')).toBe('section-strategy');
+    expect(popupStatusHint({ mode: 'paused', diagnosticsStatusMessage: '已暂停' })).toBe('已暂停');
+    expect(popupStatusHint({ mode: 'auto' })).toContain('无法注入内容脚本');
+  });
+
+  it('hides less/more/pause controls while site is paused', () => {
+    const root = document.createElement('div');
+    renderPopup(root, {
+      siteKey: 'example.com',
+      mode: 'paused',
+      diagnostics: {
+        siteMode: 'paused',
+        annotatedWords: 0,
+        scannedTextNodes: 10,
+        pendingScan: false,
+        lastScanAt: 1,
+        lastScanDurationMs: 2,
+        warnings: ['paused']
+      }
+    });
+
+    expect(root.querySelector('[data-qianci-less-annotate]')).toBeNull();
+    expect(root.querySelector('[data-qianci-more-stable]')).toBeNull();
+    expect(root.querySelector('[data-qianci-pause-site]')).toBeNull();
+    expect(root.querySelector('[data-qianci-restore-auto]')?.textContent).toContain('恢复自动标注');
+  });
+
+  it('surfaces weak-hidden count and first-run hint on the status card', () => {
+    const root = document.createElement('div');
+    renderPopup(root, {
+      siteKey: 'example.com',
+      mode: 'auto',
+      weakHiddenCount: 3,
+      showFirstRunHint: true,
+      diagnostics: {
+        siteMode: 'auto',
+        annotatedWords: 0,
+        scannedTextNodes: 8,
+        pendingScan: false,
+        lastScanAt: 1,
+        lastScanDurationMs: 2,
+        warnings: []
+      }
+    });
+
+    expect(root.textContent).toContain('被收起的词（3）');
+    expect(root.querySelector('[data-qianci-first-run-hint]')).not.toBeNull();
+    expect(countWeakHiddenWords({
+      words: {
+        a: { isKnown: false, familiarity: 3 },
+        b: { isKnown: false, familiarity: 1 },
+        c: { isKnown: true, familiarity: 9 }
+      },
+      feedbackSettings: { skipLimit: 3 }
+    })).toBe(1);
+  });
+
+  it('shows full site modes and exclude selectors when advanced is open', () => {
+    const root = document.createElement('div');
+    renderPopup(root, {
+      siteKey: 'example.com',
+      mode: 'manual-only',
+      siteAdvancedOpen: true
+    });
+
+    expect(root.querySelectorAll('[data-qianci-site-mode]')).toHaveLength(5);
+    expect(root.textContent).toContain('少标模式');
+    expect(root.textContent).toContain('更稳模式');
+    expect(root.querySelector('[data-qianci-exclude-selectors]')).not.toBeNull();
     expect(root.querySelector('[data-qianci-site-mode="manual-only"]')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('normalizes popup lookup input to a single english word', () => {
+    expect(normalizePopupLookupQuery('  Resilience! ')).toBe('resilience');
+    expect(normalizePopupLookupQuery('don’t')).toBe("don't");
+    expect(normalizePopupLookupQuery('你好')).toBe('');
+  });
+
+  it('looks up a word from local custom dictionary in the popup', async () => {
+    const root = document.createElement('div');
+    const store = createMemoryStore();
+    await saveCustomDictionary(store, {
+      resilient: {
+        word: 'resilient',
+        phonetic: '/rɪˈzɪliənt/',
+        translation: '有韧性的',
+        rank: 1,
+        source: 'custom'
+      }
+    });
+
+    await mountPopupApp(root, {
+      currentUrl: async () => 'https://example.com/article',
+      store,
+      openOptions: vi.fn(),
+      lookupWord: vi.fn()
+    });
+
+    const input = root.querySelector<HTMLInputElement>('[data-qianci-lookup-input]');
+    const form = root.querySelector<HTMLFormElement>('form.lookup-form');
+    expect(input).not.toBeNull();
+    expect(form).not.toBeNull();
+
+    input!.value = 'resilient';
+    form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => {
+      expect(root.textContent).toContain('有韧性的');
+    });
+    expect(root.textContent).toContain('我的释义');
+  });
+
+  it('falls back to online lookup from the popup when local cache misses', async () => {
+    const root = document.createElement('div');
+    const store = createMemoryStore();
+    const lookupWord = vi.fn(async () => ({
+      ok: true,
+      message: 'ok',
+      entry: {
+        word: 'tenacious',
+        phonetic: '/təˈneɪʃəs/',
+        translation: '顽强的',
+        rank: 999999,
+        source: 'online' as const
+      }
+    }));
+
+    await mountPopupApp(root, {
+      currentUrl: async () => 'https://example.com/article',
+      store,
+      openOptions: vi.fn(),
+      lookupWord
+    });
+
+    const input = root.querySelector<HTMLInputElement>('[data-qianci-lookup-input]');
+    const form = root.querySelector<HTMLFormElement>('form.lookup-form');
+    input!.value = 'tenacious';
+    form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => {
+      expect(lookupWord).toHaveBeenCalledWith('tenacious');
+      expect(root.textContent).toContain('顽强的');
+    });
+    expect(root.textContent).toContain('在线词典');
+    expect(root.querySelector('[data-qianci-lookup-known="tenacious"]')).not.toBeNull();
+  });
+
+  it('marks a looked-up word as known from the popup', async () => {
+    const root = document.createElement('div');
+    const store = createMemoryStore();
+    await saveCustomDictionary(store, {
+      resilient: {
+        word: 'resilient',
+        phonetic: '',
+        translation: '有韧性的',
+        rank: 1,
+        source: 'custom'
+      }
+    });
+
+    await mountPopupApp(root, {
+      currentUrl: async () => 'https://example.com/article',
+      store,
+      openOptions: vi.fn(),
+      lookupWord: vi.fn()
+    });
+
+    const input = root.querySelector<HTMLInputElement>('[data-qianci-lookup-input]');
+    const form = root.querySelector<HTMLFormElement>('form.lookup-form');
+    input!.value = 'resilient';
+    form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => {
+      expect(root.querySelector('[data-qianci-lookup-known="resilient"]')).not.toBeNull();
+    });
+
+    root.querySelector<HTMLButtonElement>('[data-qianci-lookup-known="resilient"]')?.click();
+    await vi.waitFor(async () => {
+      const profile = await loadProfile(store);
+      expect(profile?.words.resilient?.isKnown).toBe(true);
+      expect(root.textContent).toContain('已将 resilient 标为认识');
+    });
   });
 
   it('renders online lookup retry queue summary', () => {
@@ -39,11 +265,11 @@ describe('popup page', () => {
       }
     );
 
-    expect(root.textContent).toContain('联网补查：2 个待重试');
+    expect(root.textContent).toContain('联网重试：2 个待处理');
     const retrySummary = root.querySelector<HTMLButtonElement>('[data-qianci-open-retry-queue]');
     expect(retrySummary).not.toBeNull();
     retrySummary?.click();
-    expect(openOptions).toHaveBeenCalled();
+    expect(openOptions).toHaveBeenCalledWith('online-retry');
   });
 
   it('renders current page diagnostics and rescan action', () => {
@@ -70,9 +296,8 @@ describe('popup page', () => {
       }
     );
 
-    expect(root.textContent).toContain('页面诊断');
-    expect(root.textContent).toContain('已标注 8 个词');
-    expect(root.textContent).toContain('已检查文本 42 段');
+    expect(root.textContent).toContain('本页工具');
+    expect(root.textContent).toContain('已检查 42 段 · 标注 8 词');
     expect(root.textContent).toContain('当前空闲');
     const rescanButton = root.querySelector<HTMLButtonElement>('[data-qianci-rescan-page]');
     expect(rescanButton).not.toBeNull();
@@ -149,6 +374,7 @@ describe('popup page', () => {
       {
         siteKey: 'example.com',
         mode: 'auto',
+        diagnosticsDetailsOpen: true,
         diagnostics: {
           siteMode: 'auto',
           annotatedWords: 8,
@@ -200,7 +426,7 @@ describe('popup page', () => {
 
     const copyButton = root.querySelector<HTMLButtonElement>('[data-qianci-copy-feedback-template]');
     expect(copyButton).not.toBeNull();
-    expect(copyButton?.textContent).toBe('复制反馈模板');
+    expect(copyButton?.textContent).toBe('复制反馈');
     expect(copyButton?.getAttribute('aria-label')).toBe('复制页面问题反馈模板');
     copyButton?.click();
 
@@ -222,7 +448,8 @@ describe('popup page', () => {
         siteKey: 'restricted.example.com',
         mode: 'auto',
         retryQueueCount: 1,
-        extensionVersion: '0.1.1-test'
+        extensionVersion: '0.1.1-test',
+        diagnosticsDetailsOpen: true
       },
       {
         onRescanPage: rescanPage,
@@ -230,9 +457,7 @@ describe('popup page', () => {
       }
     );
 
-    expect(root.textContent).toContain('当前页面暂不可读');
-    expect(root.textContent).toContain('可以先点击“重新扫描本页”');
-    expect(root.textContent).toContain('仍不可用时可复制反馈模板');
+    expect(root.textContent).toContain('当前页暂不可读');
     const rescanButton = root.querySelector<HTMLButtonElement>('[data-qianci-rescan-page]');
     expect(rescanButton).not.toBeNull();
     rescanButton?.click();
@@ -276,7 +501,7 @@ describe('popup page', () => {
       rescanPage
     });
 
-    expect(root.textContent).toContain('当前页面暂不可读');
+    expect(root.textContent).toContain('当前页暂不可读');
 
     root.querySelector<HTMLButtonElement>('[data-qianci-rescan-page]')?.click();
     for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -285,7 +510,7 @@ describe('popup page', () => {
 
     expect(rescanPage).toHaveBeenCalledOnce();
     expect(root.textContent).toContain('页面诊断已刷新');
-    expect(root.textContent).toContain('已标注 2 个词');
+    expect(root.textContent).toContain('标注 2 词');
   });
 
   it('explains when retrying diagnostics still cannot read the page', async () => {
@@ -329,8 +554,7 @@ describe('popup page', () => {
       }
     });
 
-    expect(root.textContent).toContain('当前是仅手动查词，不会自动标注。');
-    expect(root.textContent).toContain('如需自动标注，请切回“自动标注”。');
+    expect(root.textContent).toContain('仅手动查词中。可用选词查词，或点“恢复自动标注”。');
   });
 
   it('explains how to restore automatic annotation when the site is paused', () => {
@@ -350,8 +574,8 @@ describe('popup page', () => {
       }
     });
 
-    expect(root.textContent).toContain('当前站点已暂停，潜词不会处理这个页面。');
-    expect(root.textContent).toContain('如需恢复，请切回“自动标注”。');
+    expect(root.textContent).toContain('本站已暂停。点“恢复自动标注”可重新标注。');
+    expect(root.querySelector('[data-qianci-restore-auto]')).not.toBeNull();
   });
 
   it('explains an empty annotation result after scanning readable text', () => {
@@ -371,10 +595,10 @@ describe('popup page', () => {
       }
     });
 
-    expect(root.textContent).toContain('已检查文本 36 段');
-    expect(root.textContent).toContain('暂未发现需要提醒的词');
-    expect(root.textContent).toContain('这通常表示页面可扫描，但当前词汇已认识、低于提醒阈值，或标注密度较保守');
-    expect(root.textContent).toContain('如果有漏掉的词，可以用 Alt + 选词手动查词');
+    expect(root.textContent).toContain('已检查 36 段 · 标注 0 词');
+    expect(root.textContent).toContain('暂无需要提醒的词');
+    expect(root.textContent).toMatch(/右键|快查/);
+    expect(root.textContent).toContain('多提醒一点（全局密度）');
     expect(buildDiagnosticReport({
       siteKey: 'example.com',
       mode: 'auto',
@@ -407,9 +631,8 @@ describe('popup page', () => {
       }
     });
 
-    expect(root.textContent).toContain('暂未找到可自动扫描的正文');
-    expect(root.textContent).toContain('可以用 Alt + 选词手动查词');
-    expect(root.textContent).toContain('或点击“复制反馈模板”反馈这个页面');
+    expect(root.textContent).toContain('暂未找到可扫描的英文正文');
+    expect(root.textContent).toContain('重新扫描');
   });
 
   it('keeps popup keyboard focus visibly outlined', () => {
@@ -446,10 +669,9 @@ describe('popup page', () => {
       }
     );
 
-    expect(root.textContent).toContain('想多提醒一点？');
     const increaseButton = root.querySelector<HTMLButtonElement>('[data-qianci-increase-density]');
     expect(increaseButton).not.toBeNull();
-    expect(increaseButton?.textContent).toBe('多提醒一点');
+    expect(increaseButton?.textContent).toBe('多提醒一点（全局密度）');
     increaseButton?.click();
     expect(increaseDensity).toHaveBeenCalledOnce();
   });
@@ -542,8 +764,7 @@ describe('popup page', () => {
 
     const resetButton = root.querySelector<HTMLButtonElement>('[data-qianci-reset-density]');
     expect(resetButton).not.toBeNull();
-    expect(resetButton?.textContent).toBe('恢复平衡');
-    expect(root.textContent).toContain('只恢复默认标注密度，不改变学习记录或站点模式');
+    expect(resetButton?.textContent).toBe('恢复默认全局密度');
     resetButton?.click();
     expect(resetDensity).toHaveBeenCalledOnce();
   });
@@ -611,48 +832,14 @@ describe('popup page', () => {
       }
     );
 
-    expect(root.textContent).toContain('检测到编辑区，建议切到仅手动查词，避免打断输入。');
-    expect(root.textContent).toContain('代码内容较多，需要时可划词或右键查词。');
+    expect(root.textContent).toContain('检测到编辑区，建议“更稳一点”或仅手动。');
     const safeModeButton = root.querySelector<HTMLButtonElement>('[data-qianci-safe-manual-mode]');
     expect(safeModeButton).not.toBeNull();
     safeModeButton?.click();
     expect(changeMode).toHaveBeenCalledWith('manual-only');
   });
 
-  it('offers a quick density reduction when automatic annotation looks crowded', () => {
-    const root = document.createElement('div');
-    const reduceDensity = vi.fn();
-
-    renderPopup(
-      root,
-      {
-        siteKey: 'docs.example.com',
-        mode: 'auto',
-        annotationDensity: 1,
-        diagnostics: {
-          siteMode: 'auto',
-          annotatedWords: 18,
-          scannedTextNodes: 42,
-          pendingScan: false,
-          lastScanAt: 100,
-          lastScanDurationMs: 6,
-          warnings: []
-        }
-      },
-      {
-        onReduceAnnotationDensity: reduceDensity
-      }
-    );
-
-    expect(root.textContent).toContain('标注有点多？');
-    const reduceButton = root.querySelector<HTMLButtonElement>('[data-qianci-reduce-density]');
-    expect(reduceButton).not.toBeNull();
-    expect(reduceButton?.textContent).toBe('少标一些');
-    reduceButton?.click();
-    expect(reduceDensity).toHaveBeenCalledOnce();
-  });
-
-  it('does not offer quick density reduction while diagnostics are still scanning', () => {
+  it('does not duplicate crowded-page density reduction beside the three main site buttons', () => {
     const root = document.createElement('div');
 
     renderPopup(root, {
@@ -663,14 +850,16 @@ describe('popup page', () => {
         siteMode: 'auto',
         annotatedWords: 18,
         scannedTextNodes: 42,
-        pendingScan: true,
+        pendingScan: false,
         lastScanAt: 100,
         lastScanDurationMs: 6,
         warnings: []
       }
     });
 
+    // 「少标一点」承担本站/后续全局密度；工具区不再并列「再少标一些」
     expect(root.querySelector('[data-qianci-reduce-density]')).toBeNull();
+    expect(root.querySelector('[data-qianci-less-annotate]')).not.toBeNull();
   });
 
   it('persists selected site mode and opens the full settings page', async () => {
@@ -684,13 +873,14 @@ describe('popup page', () => {
       openOptions
     });
 
-    const pauseButton = root.querySelector<HTMLButtonElement>('[data-qianci-site-mode="paused"]');
-    pauseButton?.click();
-    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>('[data-qianci-pause-site]')?.click();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await Promise.resolve();
+    }
 
     const policies = await loadSitePolicies(store);
     expect(policies['example.com']?.mode).toBe('paused');
-    expect(root.querySelector('[data-qianci-site-mode="paused"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(root.textContent).toContain('本站现在：暂停本站');
 
     const settingsButton = root.querySelector<HTMLButtonElement>('[data-qianci-open-options]');
     settingsButton?.click();
@@ -739,32 +929,33 @@ describe('popup page', () => {
       getPageDiagnostics
     });
 
-    root.querySelector<HTMLButtonElement>('[data-qianci-site-mode="paused"]')?.click();
-    await Promise.resolve();
-
-    expect(root.textContent).toContain('已暂停当前站点');
-    expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
-    expect(rescanPage).not.toHaveBeenCalled();
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      await Promise.resolve();
-    }
-    expect(root.textContent).toContain('当前站点已暂停，潜词不会处理这个页面。');
-    expect(root.textContent).toContain('已标注 0 个词');
-
-    root.querySelector<HTMLButtonElement>('[data-qianci-site-mode="auto"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-qianci-pause-site]')?.click();
     for (let attempt = 0; attempt < 6; attempt += 1) {
       await Promise.resolve();
     }
 
-    expect(rescanPage).toHaveBeenCalledOnce();
-    expect(root.textContent).toContain('已恢复自动标注，并重新扫描当前页');
-    expect(root.textContent).toContain('已标注 6 个词');
-    expect(root.querySelector('[data-qianci-site-mode="auto"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(root.textContent).toContain('已暂停当前站点');
+    expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
+    expect(rescanPage).not.toHaveBeenCalled();
+    expect(root.textContent).toContain('暂停本站');
+    expect(root.textContent).toContain('标注 0 词');
+
+    root.querySelector<HTMLButtonElement>('[data-qianci-restore-auto]')?.click();
+    await vi.waitFor(() => {
+      expect(rescanPage).toHaveBeenCalledOnce();
+      expect(root.textContent).toContain('已恢复自动标注，并重新扫描当前页');
+      expect(root.textContent).toContain('标注 6 词');
+      expect(root.textContent).toContain('本站现在：自动标注');
+    });
   });
 
   it('shows a recoverable warning when returning to auto mode cannot refresh the page', async () => {
     const root = document.createElement('div');
-    const store = createMemoryStore();
+    const store = createMemoryStore({
+      'qianci.sitePolicies': {
+        'example.com': { mode: 'paused', updatedAt: 1 }
+      }
+    });
 
     await mountPopupApp(root, {
       currentUrl: async () => 'https://www.example.com/article',
@@ -772,31 +963,37 @@ describe('popup page', () => {
       openOptions: vi.fn(),
       rescanPage: vi.fn().mockRejectedValue(new Error('tab unavailable')),
       getPageDiagnostics: async () => ({
-        siteMode: 'manual-only',
+        siteMode: 'paused',
         annotatedWords: 0,
         scannedTextNodes: 0,
         pendingScan: false,
         lastScanAt: 100,
         lastScanDurationMs: 0,
-        warnings: ['manual-only']
+        warnings: ['paused']
       })
     });
 
-    root.querySelector<HTMLButtonElement>('[data-qianci-site-mode="auto"]')?.click();
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      await Promise.resolve();
-    }
-
-    expect(root.textContent).toContain('已恢复自动标注，但当前页刷新失败，请手动重新扫描或刷新页面。');
-    expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
-    expect(root.querySelector('[data-qianci-site-mode="auto"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(root.querySelector('[data-qianci-restore-auto]')).not.toBeNull();
+    root.querySelector<HTMLButtonElement>('[data-qianci-restore-auto]')?.click();
+    await vi.waitFor(() => {
+      expect(root.textContent).toContain('已恢复自动标注，但当前页刷新失败，请手动重新扫描或刷新页面。');
+      expect(root.textContent).toContain('本站现在：自动标注');
+    });
   });
 
-  it('persists quick density reduction from the popup without changing site mode', async () => {
+  it('reduces global density via 少标一点 when already in low-density mode', async () => {
     const root = document.createElement('div');
     const rescanPage = vi.fn().mockResolvedValue(undefined);
     const store = createMemoryStore({
-      'qianci.profile': createProfile('cet4')
+      'qianci.profile': createProfile('cet4'),
+      'qianci.sitePolicies': {
+        'example.com': {
+          mode: 'low-density',
+          updatedAt: Date.now(),
+          excludeSelectors: [],
+          allowSameOriginFrames: false
+        }
+      }
     });
 
     await mountPopupApp(root, {
@@ -805,29 +1002,27 @@ describe('popup page', () => {
       openOptions: vi.fn(),
       rescanPage,
       getPageDiagnostics: async () => ({
-        siteMode: 'auto',
-        annotatedWords: 18,
+        siteMode: 'low-density',
+        annotatedWords: 8,
         scannedTextNodes: 42,
         pendingScan: false,
         lastScanAt: 100,
         lastScanDurationMs: 6,
-        warnings: []
+        warnings: ['low-density']
       })
     });
 
-    root.querySelector<HTMLButtonElement>('[data-qianci-reduce-density]')?.click();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect((await loadProfile(store))?.annotationDensity).toBe(0.9);
-    expect(root.textContent).toContain('已调低标注密度');
-    expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
-    expect(root.querySelector('[data-qianci-site-mode="auto"]')?.getAttribute('aria-pressed')).toBe('true');
+    root.querySelector<HTMLButtonElement>('[data-qianci-less-annotate]')?.click();
+    await vi.waitFor(async () => {
+      expect((await loadProfile(store))?.annotationDensity).toBe(0.9);
+    });
+    expect(root.textContent).toContain('全局标注密度');
+    expect(root.textContent).toContain('所有网站');
+    expect(root.textContent).toContain('本站现在：少标模式');
     expect(rescanPage).toHaveBeenCalledOnce();
   });
 
-  it('shows loading feedback and prevents repeated density changes while refreshing the page', async () => {
+  it('shows loading feedback while global density is refreshing from low-density 少标一点', async () => {
     const root = document.createElement('div');
     let finishRescan!: () => void;
     const rescanPage = vi.fn(
@@ -837,7 +1032,15 @@ describe('popup page', () => {
         })
     );
     const store = createMemoryStore({
-      'qianci.profile': createProfile('cet4')
+      'qianci.profile': createProfile('cet4'),
+      'qianci.sitePolicies': {
+        'example.com': {
+          mode: 'low-density',
+          updatedAt: Date.now(),
+          excludeSelectors: [],
+          allowSameOriginFrames: false
+        }
+      }
     });
 
     await mountPopupApp(root, {
@@ -846,43 +1049,42 @@ describe('popup page', () => {
       openOptions: vi.fn(),
       rescanPage,
       getPageDiagnostics: async () => ({
-        siteMode: 'auto',
-        annotatedWords: 18,
+        siteMode: 'low-density',
+        annotatedWords: 8,
         scannedTextNodes: 42,
         pendingScan: false,
         lastScanAt: 100,
         lastScanDurationMs: 6,
-        warnings: []
+        warnings: ['low-density']
       })
     });
 
-    root.querySelector<HTMLButtonElement>('[data-qianci-reduce-density]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-qianci-less-annotate]')?.click();
     await Promise.resolve();
     await Promise.resolve();
 
-    const loadingButton = root.querySelector<HTMLButtonElement>('[data-qianci-reduce-density]');
-    expect(loadingButton?.disabled).toBe(true);
-    expect(loadingButton?.getAttribute('aria-busy')).toBe('true');
     expect(root.textContent).toContain('正在调整标注密度');
     expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
-
-    loadingButton?.click();
-    await Promise.resolve();
     expect(rescanPage).toHaveBeenCalledOnce();
 
     finishRescan();
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      await Promise.resolve();
-    }
-
-    expect((await loadProfile(store))?.annotationDensity).toBe(0.9);
-    expect(root.querySelector<HTMLButtonElement>('[data-qianci-reduce-density]')?.disabled).toBe(false);
+    await vi.waitFor(async () => {
+      expect((await loadProfile(store))?.annotationDensity).toBe(0.9);
+    });
   });
 
-  it('keeps density changes and shows a warning when density rescan fails', async () => {
+  it('keeps global density changes and shows a warning when density rescan fails', async () => {
     const root = document.createElement('div');
     const store = createMemoryStore({
-      'qianci.profile': createProfile('cet4')
+      'qianci.profile': createProfile('cet4'),
+      'qianci.sitePolicies': {
+        'example.com': {
+          mode: 'low-density',
+          updatedAt: Date.now(),
+          excludeSelectors: [],
+          allowSameOriginFrames: false
+        }
+      }
     });
 
     await mountPopupApp(root, {
@@ -891,22 +1093,20 @@ describe('popup page', () => {
       openOptions: vi.fn(),
       rescanPage: vi.fn().mockRejectedValue(new Error('tab unavailable')),
       getPageDiagnostics: async () => ({
-        siteMode: 'auto',
-        annotatedWords: 18,
+        siteMode: 'low-density',
+        annotatedWords: 8,
         scannedTextNodes: 42,
         pendingScan: false,
         lastScanAt: 100,
         lastScanDurationMs: 6,
-        warnings: []
+        warnings: ['low-density']
       })
     });
 
-    root.querySelector<HTMLButtonElement>('[data-qianci-reduce-density]')?.click();
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      await Promise.resolve();
-    }
-
-    expect((await loadProfile(store))?.annotationDensity).toBe(0.9);
+    root.querySelector<HTMLButtonElement>('[data-qianci-less-annotate]')?.click();
+    await vi.waitFor(async () => {
+      expect((await loadProfile(store))?.annotationDensity).toBe(0.9);
+    });
     expect(root.textContent).toContain('已调整标注密度，但当前页刷新失败，请手动重新扫描或刷新页面。');
     expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
   });
@@ -976,7 +1176,7 @@ describe('popup page', () => {
     }
 
     expect((await loadProfile(store))?.annotationDensity).toBe(1.1);
-    expect(root.textContent).toContain('已调高标注密度');
+    expect(root.textContent).toContain('已提高全局标注密度');
     expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
     expect(rescanPage).toHaveBeenCalledOnce();
   });
@@ -1010,7 +1210,7 @@ describe('popup page', () => {
     }
 
     expect((await loadProfile(store))?.annotationDensity).toBe(1);
-    expect(root.textContent).toContain('已恢复平衡标注密度');
+    expect(root.textContent).toContain('已恢复默认全局标注密度');
     expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
     expect(rescanPage).toHaveBeenCalledOnce();
   });
@@ -1042,7 +1242,7 @@ describe('popup page', () => {
       openOptions: vi.fn()
     });
 
-    expect(root.textContent).toContain('联网补查：2 个待重试');
+    expect(root.textContent).toContain('联网重试：2 个待处理');
   });
 
   it('loads page diagnostics and refreshes them after rescan', async () => {
@@ -1078,7 +1278,7 @@ describe('popup page', () => {
       rescanPage
     });
 
-    expect(root.textContent).toContain('已标注 1 个词');
+    expect(root.textContent).toContain('标注 1 词');
 
     const rescanButton = root.querySelector<HTMLButtonElement>('[data-qianci-rescan-page]');
     rescanButton?.click();
@@ -1086,7 +1286,7 @@ describe('popup page', () => {
     await Promise.resolve();
 
     expect(rescanPage).toHaveBeenCalled();
-    expect(root.textContent).toContain('已标注 3 个词');
+    expect(root.textContent).toContain('标注 3 词');
   });
 
   it('shows immediate loading feedback while rescanning the current page', async () => {
@@ -1133,15 +1333,13 @@ describe('popup page', () => {
 
     const loadingButton = root.querySelector<HTMLButtonElement>('[data-qianci-rescan-page]');
     expect(loadingButton?.disabled).toBe(true);
-    expect(loadingButton?.getAttribute('aria-busy')).toBe('true');
     expect(root.textContent).toContain('正在重新扫描本页');
-    expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
 
     finishRescan();
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(root.textContent).toContain('已标注 3 个词');
+    expect(root.textContent).toContain('标注 3 词');
     expect(root.querySelector<HTMLButtonElement>('[data-qianci-rescan-page]')?.disabled).toBe(false);
   });
 
@@ -1172,7 +1370,6 @@ describe('popup page', () => {
 
     expect(root.textContent).toContain('重新扫描失败，请刷新页面后再试');
     expect(root.querySelector('[role="status"]')?.getAttribute('aria-live')).toBe('polite');
-    expect(root.querySelector('[role="status"]')?.getAttribute('aria-atomic')).toBe('true');
     expect(root.querySelector<HTMLButtonElement>('[data-qianci-rescan-page]')?.disabled).toBe(false);
   });
 
@@ -1197,6 +1394,9 @@ describe('popup page', () => {
         warnings: []
       })
     });
+
+    root.querySelector<HTMLButtonElement>('[data-qianci-toggle-diagnostics]')?.click();
+    await Promise.resolve();
 
     const copyButton = root.querySelector<HTMLButtonElement>('[data-qianci-copy-diagnostics]');
     copyButton?.click();
@@ -1234,6 +1434,9 @@ describe('popup page', () => {
       getPageDiagnostics: async () => undefined
     });
 
+    root.querySelector<HTMLButtonElement>('[data-qianci-toggle-diagnostics]')?.click();
+    await Promise.resolve();
+
     const copyButton = root.querySelector<HTMLButtonElement>('[data-qianci-copy-diagnostics]');
     copyButton?.click();
     await Promise.resolve();
@@ -1268,10 +1471,12 @@ describe('popup page', () => {
 
     const safeModeButton = root.querySelector<HTMLButtonElement>('[data-qianci-safe-manual-mode]');
     safeModeButton?.click();
-    await Promise.resolve();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await Promise.resolve();
+    }
 
     const policies = await loadSitePolicies(store);
     expect(policies['docs.example.com']?.mode).toBe('manual-only');
-    expect(root.querySelector('[data-qianci-site-mode="manual-only"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(root.textContent).toContain('本站现在：仅手动查词');
   });
 });

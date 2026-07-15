@@ -1,4 +1,5 @@
 import type { DictionaryEntry } from '../core/dictionaryEntry';
+import { compactGloss, dictionarySourceLabel } from '../core/dictionarySource';
 import type { RectLike } from './placement';
 import { chooseTooltipPlacement } from './placement';
 
@@ -16,6 +17,11 @@ export interface TooltipController {
   showAlwaysAnnotateNotice(anchor: HTMLElement | RectLike, word: string, onUndo: () => void): void;
   cancelHide(): void;
   scheduleHide(): void;
+  /**
+   * 判断事件目标是否属于查词卡片（含 Shadow 宿主）。
+   * 用于标注词 mouseleave 时判断指针是否已移入卡片。
+   */
+  ownsEventTarget(target: EventTarget | null): boolean;
   hide(): void;
   version(): number;
   updateFocusColor(color: string): void;
@@ -26,12 +32,20 @@ export interface TooltipShowOptions {
   focusPrimaryAction?: boolean;
   returnFocusTo?: HTMLElement;
   announceStatus?: boolean;
-  onTranslationFeedback?: (word: string) => void;
+  /**
+   * 用户保存自定义释义或标记释义不准时调用。
+   * @param word 单词
+   * @param translation 新释义；未提供时表示仅记录问题并用旧释义入自定义库
+   */
+  onTranslationFeedback?: (word: string, translation?: string) => void;
+  /** 是否展示联网查询按钮；关闭联网补查时为 false。 */
+  showOnlineLookup?: boolean;
 }
 
 const TOOLTIP_WIDTH = 220;
 const TOOLTIP_HEIGHT = 108;
-const HIDE_DELAY_MS = 140;
+/** 词与卡片之间常有 8–20px 空隙，过短会导致指针还没移入卡片就消失。 */
+const HIDE_DELAY_MS = 420;
 const OCCLUSION_SAMPLE_X = [0.15, 0.5, 0.85];
 
 interface TextLineOptions {
@@ -60,30 +74,14 @@ function appendTextLine(
 }
 
 function compactTranslation(text: string): string {
-  return text
-    .split(/[；;\n]+/)
-    .map((part) => part.replace(/\[[^\]]+\]/g, '').trim())
-    .filter(Boolean)
-    .slice(0, 2)
-    .join('；');
+  return compactGloss(text);
 }
 
 /**
- * Converts an entry source into wording users can understand.
- *
- * @param source Dictionary entry source marker.
- * @returns Human-readable source label for tooltip metadata.
+ * Converts an entry into wording users can understand (A4).
  */
-function sourceLabel(source: DictionaryEntry['source']): string {
-  switch (source) {
-    case 'custom':
-      return '用户自定义';
-    case 'online':
-      return '在线缓存';
-    case 'bundled':
-    default:
-      return '本地词库';
-  }
+function sourceLabel(entry: DictionaryEntry): string {
+  return dictionarySourceLabel(entry);
 }
 
 export function createTooltipController(doc: Document): TooltipController {
@@ -193,6 +191,36 @@ export function createTooltipController(doc: Document): TooltipController {
       text-underline-offset: 2px;
     }
 
+    .qianci-more-panel {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(70, 66, 58, 0.12);
+    }
+
+    .qianci-edit-form {
+      display: grid;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .qianci-edit-input {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 32px;
+      padding: 4px 6px;
+      border: 1px solid rgba(70, 66, 58, 0.2);
+      border-radius: 4px;
+      background: #fff;
+      color: #202020;
+      font: 12px/1.35 Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .qianci-edit-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
     a {
       color: inherit;
       text-decoration: none;
@@ -203,6 +231,7 @@ export function createTooltipController(doc: Document): TooltipController {
   let returnFocusTarget: HTMLElement | undefined;
   let expandedTrigger: HTMLElement | undefined;
   let displayVersion = 0;
+  let pointerOverTooltip = false;
 
   function ensureMounted(): void {
     if (!tooltipHost.isConnected) {
@@ -218,8 +247,61 @@ export function createTooltipController(doc: Document): TooltipController {
     hideTimer = 0;
   }
 
+  /**
+   * 指针是否仍停在查词卡片或触发标注词上。
+   * matches(':hover') 覆盖“还没收到 mouseenter 但指针已在元素上”的间隙。
+   */
+  function shouldKeepOpenForPointer(): boolean {
+    if (pointerOverTooltip) {
+      return true;
+    }
+
+    if (tooltipHost.style.display !== 'none') {
+      try {
+        if (tooltipHost.matches(':hover')) {
+          return true;
+        }
+      } catch {
+        // jsdom 等环境可能不支持 :hover，忽略即可。
+      }
+    }
+
+    if (expandedTrigger?.isConnected) {
+      try {
+        if (expandedTrigger.matches(':hover')) {
+          return true;
+        }
+      } catch {
+        // 同上。
+      }
+    }
+
+    return false;
+  }
+
+  function ownsEventTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Node)) {
+      return false;
+    }
+
+    if (target === tooltipHost || tooltipHost.contains(target)) {
+      return true;
+    }
+
+    // Shadow 内部节点：contains 在部分路径下拿不到，回退到 composed root。
+    if (target instanceof Element) {
+      const root = target.getRootNode();
+      if (root instanceof ShadowRoot && root.host === tooltipHost) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   function hideNow(): void {
     cancelHide();
+    pointerOverTooltip = false;
     tooltipHost.style.display = 'none';
     shadowRoot.querySelector('.qianci-tooltip-card')?.remove();
     displayVersion += 1;
@@ -401,10 +483,26 @@ export function createTooltipController(doc: Document): TooltipController {
         return;
       }
 
+      if (shouldKeepOpenForPointer()) {
+        return;
+      }
+
+      pointerOverTooltip = false;
       tooltipHost.style.display = 'none';
+      shadowRoot.querySelector('.qianci-tooltip-card')?.remove();
       displayVersion += 1;
       collapseExpandedTrigger();
     }, HIDE_DELAY_MS);
+  }
+
+  function handleTooltipPointerEnter(): void {
+    pointerOverTooltip = true;
+    cancelHide();
+  }
+
+  function handleTooltipPointerLeave(): void {
+    pointerOverTooltip = false;
+    scheduleHide();
   }
 
   /**
@@ -500,16 +598,22 @@ export function createTooltipController(doc: Document): TooltipController {
     return inset;
   }
 
+  /**
+   * 按卡片真实高度定位；展开「更多」或内联编辑后应再调用一次。
+   */
   function place(anchor: HTMLElement | RectLike): void {
     const rect =
       'getBoundingClientRect' in anchor
         ? anchor.getBoundingClientRect()
         : { left: anchor.x, top: anchor.y, width: anchor.width, height: anchor.height };
     const view = doc.defaultView ?? window;
+    const card = shadowRoot.querySelector('.qianci-tooltip-card') as HTMLElement | null;
+    const measuredHeight = card?.getBoundingClientRect().height ?? 0;
+    const height = measuredHeight > 0 ? measuredHeight : TOOLTIP_HEIGHT;
     const placement = chooseTooltipPlacement(
       { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
       { width: view.innerWidth || 1280, height: view.innerHeight || 900 },
-      { width: TOOLTIP_WIDTH, height: TOOLTIP_HEIGHT },
+      { width: TOOLTIP_WIDTH, height },
       { topInset: topOcclusionInset(), bottomInset: bottomOcclusionInset() }
     );
 
@@ -530,6 +634,13 @@ export function createTooltipController(doc: Document): TooltipController {
     card.className = 'qianci-tooltip-card';
     build(card);
     shadowRoot.append(card);
+    place(anchor);
+  }
+
+  /**
+   * 内容高度变化后按真实尺寸重新放置（导出给测试/内部复用）。
+   */
+  function reposition(anchor: HTMLElement | RectLike): void {
     place(anchor);
   }
 
@@ -558,12 +669,13 @@ export function createTooltipController(doc: Document): TooltipController {
     const sourcePill = doc.createElement('span');
     sourcePill.className = 'qianci-source-pill';
     sourcePill.dataset.qianciSourcePill = 'true';
-    sourcePill.textContent = sourceLabel(entry.source);
-    sourcePill.setAttribute('aria-label', `词条来源：${sourceLabel(entry.source)}`);
+    sourcePill.textContent = sourceLabel(entry);
+    sourcePill.setAttribute('aria-label', `词条来源：${sourceLabel(entry)}`);
     meta.append(sourcePill);
 
     appendAttributionLinks(meta, entry);
-    appendTranslationFeedback(meta, entry.word, onFeedback, anchor);
+    // 释义反馈已改到「更多 → 改释义」内联编辑，meta 仅保留来源。
+    void onFeedback;
     parent.append(meta);
   }
 
@@ -612,70 +724,85 @@ export function createTooltipController(doc: Document): TooltipController {
   }
 
   /**
-   * Adds a subtle translation quality feedback action.
-   *
-   * @param meta Metadata row that receives the feedback action.
-   * @param word Word being displayed.
-   * @param onFeedback Optional callback invoked when the user reports a bad translation.
-   * @param anchor Anchor used for the acknowledgement card.
-   * @returns Nothing.
+   * 在卡片内联编辑并保存自定义释义。
    */
-  function appendTranslationFeedback(
-    meta: HTMLElement,
-    word: string,
-    onFeedback: ((word: string) => void) | undefined,
-    anchor: HTMLElement | RectLike
+  function showInlineTranslationEditor(
+    anchor: HTMLElement | RectLike,
+    entry: DictionaryEntry,
+    onFeedback: (word: string, translation?: string) => void
   ): void {
-    if (!onFeedback) {
+    cancelHide();
+    const card = shadowRoot.querySelector('.qianci-tooltip-card');
+    if (!card) {
       return;
     }
 
-    meta.append(doc.createTextNode(' · '));
+    card.querySelector('.qianci-edit-form')?.remove();
+    const form = doc.createElement('form');
+    form.className = 'qianci-edit-form';
+    form.dataset.qianciEditTranslation = 'true';
 
-    const feedbackButton = doc.createElement('button');
-    feedbackButton.type = 'button';
-    feedbackButton.className = 'qianci-feedback-link';
-    feedbackButton.dataset.qianciTranslationFeedback = 'true';
-    feedbackButton.textContent = '释义不准';
-    feedbackButton.setAttribute('aria-label', `反馈 ${word} 的释义不准`);
-    feedbackButton.onclick = () => {
-      onFeedback(word);
-      showTranslationFeedbackNotice(anchor, word);
+    const input = doc.createElement('input');
+    input.type = 'text';
+    input.className = 'qianci-edit-input';
+    input.dataset.qianciEditTranslationInput = 'true';
+    input.value = compactTranslation(entry.translation);
+    input.setAttribute('aria-label', `修改 ${entry.word} 的中文释义`);
+    form.append(input);
+
+    const actions = doc.createElement('div');
+    actions.className = 'qianci-edit-actions';
+
+    const save = doc.createElement('button');
+    save.type = 'submit';
+    save.textContent = '保存';
+    save.dataset.qianciSaveTranslation = 'true';
+
+    const cancel = doc.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = '取消';
+    cancel.onclick = () => {
+      form.remove();
     };
-    meta.append(feedbackButton);
+
+    actions.append(save, cancel);
+    form.append(actions);
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const next = input.value.trim();
+      if (!next) {
+        input.focus();
+        return;
+      }
+      onFeedback(entry.word, next);
+      showTranslationSavedNotice(anchor, entry.word, next);
+    });
+    card.append(form);
+    input.focus();
+    input.select();
   }
 
-  /**
-   * Shows a small acknowledgement after translation feedback.
-   *
-   * @param anchor Tooltip anchor.
-   * @param word Word whose translation was reported.
-   * @returns Nothing.
-   */
-  function showTranslationFeedbackNotice(anchor: HTMLElement | RectLike, word: string): void {
-    render(anchor, `潜词释义反馈：${word}`, false, (card) => {
+  function showTranslationSavedNotice(anchor: HTMLElement | RectLike, word: string, translation: string): void {
+    render(anchor, `潜词释义已更新：${word}`, false, (card) => {
       const header = doc.createElement('div');
       header.className = 'qianci-tooltip-header';
-
       const label = doc.createElement('strong');
-      label.textContent = '已记录释义问题';
+      label.textContent = '已保存自定义释义';
       header.append(label);
-
       const actions = doc.createElement('div');
       actions.className = 'qianci-tooltip-actions';
       actions.append(createCloseButton());
       header.append(actions);
       card.append(header);
-
-      appendTextLine(shadowRoot, card, '之后可以在设置页改成本地自定义释义。', 'qianci-tooltip-translation', {
+      appendTextLine(shadowRoot, card, `${word}：${translation}`, 'qianci-tooltip-translation', {
         role: 'status',
         ariaLive: 'polite'
       });
     });
   }
 
-  tooltipHost.addEventListener('mouseenter', cancelHide);
-  tooltipHost.addEventListener('mouseleave', scheduleHide);
+  tooltipHost.addEventListener('mouseenter', handleTooltipPointerEnter);
+  tooltipHost.addEventListener('mouseleave', handleTooltipPointerLeave);
   tooltipHost.addEventListener('focusin', handleFocusIn);
   tooltipHost.addEventListener('focusout', handleFocusOut);
   doc.addEventListener('keydown', handleKeydown);
@@ -705,12 +832,13 @@ export function createTooltipController(doc: Document): TooltipController {
         primaryAction = known;
         actions.append(known);
 
-        const alwaysAnnotate = doc.createElement('button');
-        alwaysAnnotate.type = 'button';
-        alwaysAnnotate.textContent = '继续提醒';
-        alwaysAnnotate.setAttribute('aria-label', `继续提醒 ${entry.word}`);
-        alwaysAnnotate.onclick = actionWithFocusRestore(onAlwaysAnnotate);
-        actions.append(alwaysAnnotate);
+        const moreButton = doc.createElement('button');
+        moreButton.type = 'button';
+        moreButton.textContent = '更多';
+        moreButton.dataset.qianciTooltipMore = 'true';
+        moreButton.setAttribute('aria-expanded', 'false');
+        moreButton.setAttribute('aria-label', `更多关于 ${entry.word} 的操作`);
+        actions.append(moreButton);
         actions.append(createCloseButton());
 
         header.append(actions);
@@ -719,7 +847,43 @@ export function createTooltipController(doc: Document): TooltipController {
         appendTextLine(shadowRoot, card, entry.phonetic, 'qianci-tooltip-phonetic');
         appendTextLine(shadowRoot, card, compactTranslation(entry.translation), 'qianci-tooltip-translation');
 
-        appendEntryMeta(card, entry, options.onTranslationFeedback, anchor);
+        const morePanel = doc.createElement('div');
+        morePanel.className = 'qianci-more-panel';
+        morePanel.hidden = true;
+        morePanel.dataset.qianciMorePanel = 'true';
+
+        const alwaysAnnotate = doc.createElement('button');
+        alwaysAnnotate.type = 'button';
+        alwaysAnnotate.textContent = '总是提醒';
+        alwaysAnnotate.setAttribute('aria-label', `总是提醒 ${entry.word}`);
+        alwaysAnnotate.onclick = actionWithFocusRestore(onAlwaysAnnotate);
+        morePanel.append(alwaysAnnotate);
+
+        if (options.onTranslationFeedback) {
+          const feedbackButton = doc.createElement('button');
+          feedbackButton.type = 'button';
+          feedbackButton.className = 'qianci-feedback-link';
+          feedbackButton.dataset.qianciTranslationFeedback = 'true';
+          feedbackButton.textContent = '改释义';
+          feedbackButton.setAttribute('aria-label', `修改 ${entry.word} 的释义`);
+          feedbackButton.onclick = () => {
+            showInlineTranslationEditor(anchor, entry, options.onTranslationFeedback!);
+            reposition(anchor);
+          };
+          morePanel.append(feedbackButton);
+        }
+
+        appendEntryMeta(morePanel, entry, undefined, anchor);
+        card.append(morePanel);
+
+        moreButton.onclick = () => {
+          const open = morePanel.hidden;
+          morePanel.hidden = !open;
+          moreButton.setAttribute('aria-expanded', String(open));
+          moreButton.textContent = open ? '收起' : '更多';
+          cancelHide();
+          reposition(anchor);
+        };
       });
 
       if (options.focusPrimaryAction) {
@@ -729,6 +893,7 @@ export function createTooltipController(doc: Document): TooltipController {
     showMissing(anchor, word, onLookup, message = '词库里没有', options = {}) {
       let primaryAction: HTMLButtonElement | undefined;
       returnFocusTarget = options.returnFocusTo;
+      const allowOnlineLookup = options.showOnlineLookup !== false;
       render(anchor, `潜词查词卡片：${word}`, false, (card) => {
         const header = doc.createElement('div');
         header.className = 'qianci-tooltip-header';
@@ -737,26 +902,33 @@ export function createTooltipController(doc: Document): TooltipController {
         label.textContent = word;
         header.append(label);
 
-        const button = doc.createElement('button');
-        button.type = 'button';
-        button.textContent = '联网查询';
-        button.setAttribute('aria-label', `联网查询 ${word}`);
-        button.onclick = () => {
-          void onLookup();
-        };
-        primaryAction = button;
-
         const actions = doc.createElement('div');
         actions.className = 'qianci-tooltip-actions';
-        actions.append(button);
-        actions.append(createCloseButton());
+
+        if (allowOnlineLookup) {
+          const button = doc.createElement('button');
+          button.type = 'button';
+          button.textContent = '联网查询';
+          button.setAttribute('aria-label', `联网查询 ${word}`);
+          button.onclick = () => {
+            void onLookup();
+          };
+          primaryAction = button;
+          actions.append(button);
+        }
+
+        const closeButton = createCloseButton();
+        if (!primaryAction) {
+          primaryAction = closeButton;
+        }
+        actions.append(closeButton);
         header.append(actions);
         card.append(header);
 
         appendTextLine(
           shadowRoot,
           card,
-          message,
+          allowOnlineLookup ? message : message || '本地没有这个词，且已关闭联网补查',
           'qianci-tooltip-translation',
           options.announceStatus ? { role: 'status', ariaLive: 'polite' } : {}
         );
@@ -787,7 +959,7 @@ export function createTooltipController(doc: Document): TooltipController {
         const line = doc.createElement('div');
         line.setAttribute('role', 'status');
         line.setAttribute('aria-live', 'polite');
-        line.textContent = `${word} 正在联网查询...`;
+        line.textContent = `${word} 本地词库未收录，正在联网…`;
         card.append(line);
       });
 
@@ -831,7 +1003,7 @@ export function createTooltipController(doc: Document): TooltipController {
         header.className = 'qianci-tooltip-header';
 
         const label = doc.createElement('strong');
-        label.textContent = '会继续提醒';
+        label.textContent = '已设为总是提醒';
         header.append(label);
 
         const actions = doc.createElement('div');
@@ -840,7 +1012,7 @@ export function createTooltipController(doc: Document): TooltipController {
         const undoButton = doc.createElement('button');
         undoButton.type = 'button';
         undoButton.textContent = '撤销';
-        undoButton.setAttribute('aria-label', `撤销继续提醒 ${word}`);
+        undoButton.setAttribute('aria-label', `撤销总是提醒 ${word}`);
         undoButton.onclick = () => {
           onUndo();
         };
@@ -849,7 +1021,7 @@ export function createTooltipController(doc: Document): TooltipController {
 
         header.append(actions);
         card.append(header);
-        appendTextLine(shadowRoot, card, `${word} 之后会优先保持标注。`, 'qianci-tooltip-translation', {
+        appendTextLine(shadowRoot, card, `${word} 之后会优先保持标注，不会被路过收起。`, 'qianci-tooltip-translation', {
           role: 'status',
           ariaLive: 'polite'
         });
@@ -857,6 +1029,7 @@ export function createTooltipController(doc: Document): TooltipController {
     },
     cancelHide,
     scheduleHide,
+    ownsEventTarget,
     hide: hideNow,
     version() {
       return displayVersion;
@@ -867,8 +1040,8 @@ export function createTooltipController(doc: Document): TooltipController {
     dispose() {
       doc.removeEventListener('keydown', handleKeydown);
       doc.removeEventListener('pointerdown', handleOutsidePointerDown);
-      tooltipHost.removeEventListener('mouseenter', cancelHide);
-      tooltipHost.removeEventListener('mouseleave', scheduleHide);
+      tooltipHost.removeEventListener('mouseenter', handleTooltipPointerEnter);
+      tooltipHost.removeEventListener('mouseleave', handleTooltipPointerLeave);
       tooltipHost.removeEventListener('focusin', handleFocusIn);
       tooltipHost.removeEventListener('focusout', handleFocusOut);
       hideNow();

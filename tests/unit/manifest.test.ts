@@ -10,14 +10,13 @@ describe('extension manifest', () => {
     expect((manifest as { action?: { default_popup?: string } }).action?.default_popup).toBe('src/popup/index.html');
   });
 
-  it('does not inject content scripts into every frame by default', () => {
+  it('registers content scripts for all frames but relies on framePolicy opt-in', () => {
     expect((manifest as { content_scripts?: unknown[] }).content_scripts?.[0]).toEqual(
       expect.objectContaining({
-        matches: ['http://*/*', 'https://*/*']
+        matches: ['http://*/*', 'https://*/*'],
+        all_frames: true
       })
-    );
-    expect((manifest as { content_scripts?: Array<{ all_frames?: boolean }> }).content_scripts?.[0]?.all_frames).not.toBe(
-      true
     );
   });
 });
+

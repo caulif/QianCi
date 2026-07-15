@@ -32,6 +32,13 @@ describe('annotation decision', () => {
     expect(shouldAnnotateWord(skippedThreeTimes, { word: 'abrupt', rank: 2000 })).toBe(false);
   });
 
+  it('annotates looked-up unknown words even when rank is missing (online-only words)', () => {
+    const unknown = applyLookupFeedback(createProfile('professional'), 'serendipity', 'selection', 100);
+
+    // content 扫描层负责拦住「无词频且非生词」；决策层对 isUnknown 直接放行。
+    expect(shouldAnnotateWord(unknown, { word: 'serendipity', rank: undefined })).toBe(true);
+  });
+
   it('honors the configured weak feedback skip limit', () => {
     const unknown = applyLookupFeedback(createProfile('professional'), 'abrupt', 'hover', 100);
     const skippedOnce = applySkipFeedback(unknown, 'abrupt', 'a', 200);
@@ -75,4 +82,17 @@ describe('annotation decision', () => {
     expect(shouldAnnotateWord(balanced, { word: 'nuance', rank: 7_000 })).toBe(true);
     expect(shouldAnnotateWord(fewer, { word: 'nuance', rank: 7_000 })).toBe(false);
   });
+
+  it('annotates fewer borderline words on low-density sites', () => {
+    const profile = createProfile('cet4');
+    // 选择 auto 下刚好过线、low-density 下不过线的边界 rank。
+    let rank = 500;
+    while (rank < 50_000 && !shouldAnnotateWord(profile, { word: 'borderline', rank })) {
+      rank += 50;
+    }
+    expect(shouldAnnotateWord(profile, { word: 'borderline', rank })).toBe(true);
+    expect(shouldAnnotateWord(profile, { word: 'borderline', rank }, { siteMode: 'low-density' })).toBe(false);
+  });
 });
+
+

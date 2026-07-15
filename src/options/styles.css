@@ -37,6 +37,56 @@ body {
   font-size: 13px;
 }
 
+.options-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid #ebe7df;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fafaf8;
+}
+
+.options-nav-link {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid #ddd7cd;
+  border-radius: 999px;
+  background: #fffefb;
+  color: #3f3a33;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.options-nav-link:hover,
+.options-nav-link:focus-visible {
+  border-color: #b8aa91;
+  background: #f4f1ea;
+  outline: none;
+}
+
+.options-nav-link.is-active {
+  border-color: #8b7355;
+  background: #efe8dc;
+  color: #2a241c;
+  font-weight: 600;
+}
+
+.options-section {
+  margin-top: 22px;
+  scroll-margin-top: 64px;
+}
+
+.options-section-title {
+  margin: 0 0 4px;
+  color: #2f2a24;
+  font-size: 16px;
+  font-weight: 650;
+}
+
 .panel {
   margin-top: 18px;
   padding: 18px;
@@ -267,6 +317,70 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+}
+
+.privacy-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: #3f3a33;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.privacy-toggle input {
+  width: 16px;
+  height: 16px;
+}
+
+.custom-dictionary-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.custom-dictionary-form .search-input {
+  margin-top: 0;
+}
+
+.custom-dictionary-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.custom-dictionary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #eee8df;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.custom-dictionary-text {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.custom-dictionary-text strong {
+  font-size: 13px;
+}
+
+.custom-dictionary-text span {
+  color: #6f6a62;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.custom-dictionary-message {
+  margin-top: 8px;
+  color: #5f7b66;
 }
 
 .retry-list {

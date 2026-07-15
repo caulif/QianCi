@@ -4,8 +4,11 @@ import {
   applyLookupFeedback,
   applySkipFeedback,
   createProfile,
+  isOnlineLookupEnabled,
   markWordAlwaysAnnotate,
+  markWordAsUnknown,
   normalizeProfile,
+  preferClickTriggerForPointer,
   resetSkipFeedback,
   shouldStopAnnotating,
   unmarkWordAlwaysAnnotate
@@ -20,6 +23,7 @@ describe('profile feedback', () => {
     expect(profile.manualShortcut).toBe('alt');
     expect(profile.annotationDensity).toBe(1);
     expect(profile.offlineDictionaryTier).toBe('extended');
+    expect(profile.onlineLookupEnabled).toBe(true);
     expect(profile.onboardingDismissedAt).toBeUndefined();
     expect(profile.feedbackSettings).toEqual({
       skipLimit: 3,
@@ -29,19 +33,31 @@ describe('profile feedback', () => {
     });
   });
 
+  it('prefers click lookup trigger when the primary pointer has no hover', () => {
+    const hoverProfile = createProfile('cet4');
+    expect(preferClickTriggerForPointer(hoverProfile, { hoverNone: true }).lookupTrigger).toBe('click');
+    expect(preferClickTriggerForPointer(hoverProfile, { hoverNone: false }).lookupTrigger).toBe('hover');
+    const clickProfile = { ...createProfile('cet4'), lookupTrigger: 'click' as const };
+    expect(preferClickTriggerForPointer(clickProfile, { hoverNone: true }).lookupTrigger).toBe('click');
+  });
+
   it('backfills feedback settings when normalizing an older profile', () => {
     const olderProfile = createProfile('cet4');
     const normalized = normalizeProfile({
       ...olderProfile,
-      feedbackSettings: undefined
+      feedbackSettings: undefined,
+      onlineLookupEnabled: undefined
     } as never);
 
     expect(normalized.feedbackSettings.skipLimit).toBe(3);
     expect(normalized.feedbackSettings.skipDelayMs).toBe(3500);
     expect(normalized.feedbackSettings.suppressionMode).toBe('balanced');
     expect(normalized.annotationDensity).toBe(1);
+    expect(normalized.onlineLookupEnabled).toBe(true);
     expect(normalized.onboardingDismissedAt).toBeUndefined();
     expect(normalized.offlineDictionaryTier).toBe('extended');
+    expect(isOnlineLookupEnabled(normalized)).toBe(true);
+    expect(isOnlineLookupEnabled({ onlineLookupEnabled: false })).toBe(false);
   });
 
   it('repairs invalid annotation density from damaged storage data', () => {
@@ -112,6 +128,19 @@ describe('profile feedback', () => {
     expect(lookedUp.words.abrupt?.isKnown).toBe(true);
     expect(lookedUp.words.abrupt?.isUnknown).toBe(false);
     expect(lookedUp.levelScore).toBe(known.levelScore);
+  });
+
+  it('marks online-looked-up words as unknown without changing level score', () => {
+    const base = createProfile('cet4');
+    const unknown = markWordAsUnknown(base, 'serendipity', 100);
+    const known = applyKnownFeedback(base, 'apple', 50);
+    const knownUntouched = markWordAsUnknown(known, 'apple', 100);
+
+    expect(unknown.words.serendipity?.isUnknown).toBe(true);
+    expect(unknown.words.serendipity?.isKnown).toBe(false);
+    expect(unknown.levelScore).toBe(base.levelScore);
+    expect(knownUntouched.words.apple?.isKnown).toBe(true);
+    expect(knownUntouched.words.apple?.isUnknown).toBe(false);
   });
 
   it('counts skipped annotated words as weak familiarity only once per page', () => {

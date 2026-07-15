@@ -4,10 +4,11 @@ import {
   applyKnownFeedback,
   applyLookupFeedback,
   applySkipFeedback,
+  isOnlineLookupEnabled,
   markWordAlwaysAnnotate,
   underlineToneColor
 } from '../core/profile';
-import type { LookupFeedbackMode } from '../core/types';
+import type { LookupFeedbackMode, SiteMode, SitePolicy } from '../core/types';
 import { buildPageDiagnostics } from './appDiagnostics';
 import {
   ensureStyles,
@@ -22,16 +23,16 @@ import { createAnnotatedFragment } from './annotator';
 import type { ContentApp, ContentServices } from './contentAppTypes';
 import {
   ariaReferenceTargetsFromMutation,
-  hasActiveTextSelection,
   removeAnnotationsInRoot,
   removeAnnotationElement,
   shouldCleanAnnotatedRoot,
   shouldSkipTextNode,
+  shouldYieldClickLookupForSelection,
   SKIP_SELECTOR,
   suppressPageClick
 } from './domCompatibility';
 import type { RectLike } from './placement';
-import { normalizeSelectedWord } from './selection';
+import { inflectionLookupCandidates, normalizeSelectedWord } from './selection';
 import {
   clearUserInteractionYield,
   createScanSchedulerState,
@@ -56,10 +57,16 @@ interface ShadowDiscoveryHost {
   attempts: number;
 }
 
+function isAutomaticAnnotationMode(mode: SiteMode): boolean {
+  return mode === 'auto' || mode === 'low-density' || mode === 'safe';
+}
+
 export function createContentApp(doc: Document, services: ContentServices): ContentApp {
   let disposed = false;
   let profile = services.profile;
   let siteMode = services.siteMode ?? 'auto';
+  let sitePolicy = services.sitePolicy;
+  const isTopFrame = services.isTopFrame ?? true;
   const tooltip = createTooltipController(doc);
   tooltip.updateFocusColor(underlineToneColor(profile.underlineTone));
   const skipCandidates = new Map<HTMLElement, { word: string; observedAt: number; pageKey: string }>();
@@ -121,7 +128,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
   }
 
   /**
-   * 创建“继续提醒”动作，让弱反馈不再自动隐藏该词。
+   * 创建「总是提醒」动作，让弱反馈不再自动隐藏该词。
    *
    * @param word 用户希望继续看到标注的单词。
    * @returns tooltip 按钮点击处理函数。
@@ -141,15 +148,14 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
   }
 
   /**
-   * 创建“释义不准”反馈动作，保持 tooltip 只负责轻量确认。
-   *
-   * @param word 用户反馈的单词。
-   * @param entry 当前展示的词条。
-   * @returns tooltip 反馈按钮点击处理函数。
+   * 创建释义反馈 / 自定义释义保存动作。
    */
-  function translationFeedbackAction(word: string, entry: DictionaryEntry): (feedbackWord: string) => void {
-    return (feedbackWord: string) => {
-      void services.onTranslationFeedback?.(feedbackWord || word, entry);
+  function translationFeedbackAction(
+    word: string,
+    entry: DictionaryEntry
+  ): (feedbackWord: string, translation?: string) => void {
+    return (feedbackWord: string, translation?: string) => {
+      void services.onTranslationFeedback?.(feedbackWord || word, entry, translation);
     };
   }
 
@@ -227,7 +233,13 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     options: LookupWordOptions = {}
   ): Promise<void> {
     try {
-      const entry = await services.resolveEntry(word);
+      let entry: DictionaryEntry | undefined;
+      for (const candidate of inflectionLookupCandidates(word)) {
+        entry = await services.resolveEntry(candidate);
+        if (entry) {
+          break;
+        }
+      }
       if (disposed) {
         return;
       }
@@ -247,50 +259,75 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
         return;
       }
 
-      tooltip.showMissing(anchor, word, async () => {
-        let loadingVersion = 0;
-        try {
-          tooltip.showLoading(anchor, word, {
-            focusPrimaryAction: options.focusPrimaryAction,
-            returnFocusTo: options.returnFocusTo
-          });
-          loadingVersion = tooltip.version();
-          const result = await services.lookupOnline(word);
-          if (tooltip.version() !== loadingVersion) {
-            return;
-          }
-          if (!isUsableAnchor(anchor)) {
-            return;
-          }
-          if (!result.entry) {
-            tooltip.showMissing(anchor, word, async () => {
+      if (!isOnlineLookupEnabled(profile)) {
+        tooltip.showMissing(anchor, word, () => undefined, '本地没有这个词，且已关闭联网补查', {
+          focusPrimaryAction: options.focusPrimaryAction,
+          returnFocusTo: options.returnFocusTo,
+          announceStatus: true,
+          showOnlineLookup: false
+        });
+        return;
+      }
+
+      // A2：主动查词路径本地未命中则直接联网（不再二次点击）。
+      let loadingVersion = 0;
+      try {
+        tooltip.showLoading(anchor, word, {
+          focusPrimaryAction: options.focusPrimaryAction,
+          returnFocusTo: options.returnFocusTo
+        });
+        loadingVersion = tooltip.version();
+        const result = await services.lookupOnline(word);
+        if (tooltip.version() !== loadingVersion) {
+          return;
+        }
+        if (!isUsableAnchor(anchor)) {
+          return;
+        }
+        if (!result.entry) {
+          tooltip.showMissing(
+            anchor,
+            word,
+            async () => {
               await lookupWord(anchor, word, mode, options);
-            }, onlineLookupStatusMessage(result), {
+            },
+            onlineLookupStatusMessage(result),
+            {
               focusPrimaryAction: options.focusPrimaryAction,
               returnFocusTo: options.returnFocusTo,
-              announceStatus: true
-            });
-            return;
-          }
+              announceStatus: true,
+              showOnlineLookup: isOnlineLookupEnabled(profile)
+            }
+          );
+          return;
+        }
 
-          await showOnlineResult(anchor, word, result.entry, mode, options);
-        } catch (error) {
-          if (tooltip.version() !== loadingVersion) {
-            return;
-          }
-          console.error(error);
-          tooltip.showMissing(anchor, word, async () => {
+        await showOnlineResult(anchor, word, result.entry, mode, options);
+        // 联网生词默认不认识：同页其它出现处补下划线。
+        if (isAutomaticAnnotationMode(siteMode)) {
+          clearUserInteractionYield(scanScheduler);
+          scheduleScan(doc.body);
+        }
+      } catch (error) {
+        if (tooltip.version() !== loadingVersion) {
+          return;
+        }
+        console.error(error);
+        tooltip.showMissing(
+          anchor,
+          word,
+          async () => {
             await lookupWord(anchor, word, mode, options);
-          }, '联网查询失败', {
+          },
+          '联网查询失败',
+          {
             focusPrimaryAction: options.focusPrimaryAction,
             returnFocusTo: options.returnFocusTo,
-            announceStatus: true
-          });
-        }
-      }, '词库里没有', {
-        focusPrimaryAction: options.focusPrimaryAction,
-        returnFocusTo: options.returnFocusTo
-      });
+            announceStatus: true,
+            showOnlineLookup: isOnlineLookupEnabled(profile)
+          }
+        );
+      }
     } catch (error) {
       console.error(error);
     }
@@ -318,8 +355,31 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
 
       void (async () => {
         try {
-          const entry = await services.resolveEntry(word);
-          if (!entry || hoverRequestId !== requestId || disposed || !element.isConnected) {
+          // 内联候选解析，保持与旧路径相同的微任务深度（单层 await）。
+          let entry: DictionaryEntry | undefined;
+          for (const candidate of inflectionLookupCandidates(word)) {
+            entry = await services.resolveEntry(candidate);
+            if (entry) {
+              break;
+            }
+          }
+          if (hoverRequestId !== requestId || disposed || !element.isConnected) {
+            return;
+          }
+
+          // G4：本地无义时不静默，引导点击（hover 本身不自动联网）。
+          if (!entry) {
+            tooltip.showMissing(
+              element,
+              word,
+              () => {
+                void lookupWord(element, word, 'click');
+              },
+              '本地无释义，点击查询',
+              {
+                showOnlineLookup: isOnlineLookupEnabled(profile)
+              }
+            );
             return;
           }
 
@@ -334,26 +394,33 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       })();
     });
 
-    element.addEventListener('mouseleave', () => {
+    element.addEventListener('mouseleave', (event) => {
       hoverRequestId += 1;
+      // 指针从标注词移入卡片时不要排队隐藏，避免空隙中卡片闪灭。
+      if (tooltip.ownsEventTarget(event.relatedTarget)) {
+        tooltip.cancelHide();
+        return;
+      }
       tooltip.scheduleHide();
     });
 
-    element.addEventListener('click', (event) => {
-      markUserInteraction(scanScheduler, performance.now());
-      if (profile.lookupTrigger !== 'click') {
-        return;
-      }
+    // G1+G3：hover 模式下 click 仍查词；capture 降低祖先抢事件概率。
+    element.addEventListener(
+      'click',
+      (event) => {
+        markUserInteraction(scanScheduler, performance.now());
 
-      if (hasActiveTextSelection(doc)) {
-        return;
-      }
+        if (shouldYieldClickLookupForSelection(doc, element)) {
+          return;
+        }
 
-      suppressPageClick(event);
-      clearSkipCandidate(element);
-      tooltip.cancelHide();
-      void lookupWord(element, word, 'click');
-    });
+        suppressPageClick(event);
+        clearSkipCandidate(element);
+        tooltip.cancelHide();
+        void lookupWord(element, word, 'click');
+      },
+      true
+    );
 
     element.addEventListener('keydown', (event) => {
       markUserInteraction(scanScheduler, performance.now());
@@ -402,11 +469,14 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
 
   function annotateTextNode(textNode: Text): void {
     const fragment = createAnnotatedFragment(textNode.data, (token) => {
-      const rank = services.ranks[token.normalized];
-      if (!rank) {
+      const word = token.normalized;
+      const state = profile.words[word];
+      const rank = services.ranks[word];
+      // 词频表未收录时仍标注：用户查过的生词（含联网补查）与「总是提醒」。
+      if (!rank && !state?.isUnknown && !state?.alwaysAnnotate) {
         return false;
       }
-      return shouldAnnotateWord(profile, { word: token.normalized, rank });
+      return shouldAnnotateWord(profile, { word, rank }, { siteMode });
     });
 
     const annotated = Array.from(fragment.querySelectorAll<HTMLElement>('[data-qianci-word]'));
@@ -418,6 +488,13 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       bindWordElement(element);
     }
     textNode.replaceWith(fragment);
+  }
+
+  function skipOptions() {
+    return {
+      excludeSelectors: sitePolicy?.excludeSelectors,
+      safeMode: siteMode === 'safe'
+    };
   }
 
   function getDiagnostics() {
@@ -433,7 +510,8 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       maxScanSliceDurationMs,
       queuedScanNodes: Math.max(0, nodeQueue.length - nodeQueueIndex),
       deferredScanNodes: scanScheduler.deferredScanNodes,
-      throttledMutationBatches: scanScheduler.throttledMutationBatches
+      throttledMutationBatches: scanScheduler.throttledMutationBatches,
+      isTopFrame
     });
   }
 
@@ -593,7 +671,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
 
       if (node.nodeType === Node.TEXT_NODE) {
         const textNode = node as Text;
-        if (textNode.data.trim() && !shouldSkipTextNode(textNode)) {
+        if (textNode.data.trim() && !shouldSkipTextNode(textNode, skipOptions())) {
           scannedTextNodes += 1;
           annotateTextNode(textNode);
         }
@@ -667,7 +745,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
   }
 
   function scheduleScan(root: ParentNode = doc.body): void {
-    if (!root || disposed || siteMode !== 'auto') {
+    if (!root || disposed || !isAutomaticAnnotationMode(siteMode)) {
       return;
     }
 
@@ -697,7 +775,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
    * @returns Nothing.
    */
   function scheduleShadowDiscovery(): void {
-    if (shadowDiscoveryTimer || disposed || siteMode !== 'auto' || !shadowDiscoveryHosts.length) {
+    if (shadowDiscoveryTimer || disposed || !isAutomaticAnnotationMode(siteMode) || !shadowDiscoveryHosts.length) {
       return;
     }
 
@@ -711,7 +789,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
    */
   function runShadowDiscovery(): void {
     shadowDiscoveryTimer = 0;
-    if (disposed || siteMode !== 'auto') {
+    if (disposed || !isAutomaticAnnotationMode(siteMode)) {
       shadowDiscoveryHosts.length = 0;
       return;
     }
@@ -754,7 +832,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
    * @returns Nothing.
    */
   function handlePopoverToggle(event: Event): void {
-    if (disposed || siteMode !== 'auto') {
+    if (disposed || !isAutomaticAnnotationMode(siteMode)) {
       return;
     }
 
@@ -778,7 +856,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
    * @returns Nothing.
    */
   function handleSlotChange(event: Event): void {
-    if (disposed || siteMode !== 'auto') {
+    if (disposed || !isAutomaticAnnotationMode(siteMode)) {
       return;
     }
 
@@ -907,7 +985,7 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
     }
   });
   doc.addEventListener('toggle', handlePopoverToggle, true);
-  if (siteMode === 'auto') {
+  if (isAutomaticAnnotationMode(siteMode)) {
     observeBody();
   }
 
@@ -955,13 +1033,29 @@ export function createContentApp(doc: Document, services: ContentServices): Cont
       }
 
       siteMode = mode;
-      if (siteMode === 'auto') {
+      if (sitePolicy) {
+        sitePolicy = { ...sitePolicy, mode };
+      }
+      if (isAutomaticAnnotationMode(siteMode)) {
         clearUserInteractionYield(scanScheduler);
         observeBody();
         scheduleScan(doc.body);
         return;
       }
 
+      pauseAutomaticAnnotation();
+    },
+    updateSitePolicy(policy: SitePolicy | undefined) {
+      sitePolicy = policy;
+      if (policy?.mode) {
+        siteMode = policy.mode;
+      }
+      if (isAutomaticAnnotationMode(siteMode)) {
+        clearUserInteractionYield(scanScheduler);
+        observeBody();
+        scheduleScan(doc.body);
+        return;
+      }
       pauseAutomaticAnnotation();
     },
     getDiagnostics() {

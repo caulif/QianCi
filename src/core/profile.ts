@@ -114,6 +114,20 @@ export const LOOKUP_TRIGGERS: Array<{ trigger: LookupTrigger; label: string }> =
   { trigger: 'click', label: '点击' }
 ];
 
+/**
+ * 无悬停能力（如多数触控设备）时，将默认 hover 触发改为 click。
+ * 用户已手动选过 click 时不会改写。
+ */
+export function preferClickTriggerForPointer(
+  profile: UserProfile,
+  media: { hoverNone: boolean }
+): UserProfile {
+  if (!media.hoverNone || profile.lookupTrigger !== 'hover') {
+    return profile;
+  }
+  return { ...profile, lookupTrigger: 'click' };
+}
+
 export const MANUAL_SHORTCUTS: Array<{ key: ManualShortcut; label: string }> = [
   { key: 'alt', label: 'Alt' },
   { key: 'ctrl', label: 'Ctrl' },
@@ -161,6 +175,7 @@ export function createProfile(level: UserLevel): UserProfile {
     manualShortcut: 'alt',
     annotationDensity: DEFAULT_ANNOTATION_DENSITY,
     offlineDictionaryTier: DEFAULT_OFFLINE_DICTIONARY_TIER,
+    onlineLookupEnabled: true,
     feedbackSettings: DEFAULT_FEEDBACK_SETTINGS,
     words: {}
   };
@@ -185,10 +200,21 @@ export function normalizeProfile(profile: Partial<UserProfile>): UserProfile {
     manualShortcut: profile.manualShortcut ?? fallback.manualShortcut,
     annotationDensity: normalizeAnnotationDensity(profile.annotationDensity),
     offlineDictionaryTier: normalizeOfflineDictionaryTier(profile.offlineDictionaryTier),
+    onlineLookupEnabled: profile.onlineLookupEnabled !== false,
     onboardingDismissedAt: normalizeOptionalTimestamp(profile.onboardingDismissedAt),
     feedbackSettings: normalizeFeedbackSettings(profile.feedbackSettings),
     words: profile.words ?? {}
   };
+}
+
+/**
+ * 当前配置是否允许联网补查。
+ *
+ * @param profile 用户画像。
+ * @returns 允许时返回 true。
+ */
+export function isOnlineLookupEnabled(profile: Pick<UserProfile, 'onlineLookupEnabled'>): boolean {
+  return profile.onlineLookupEnabled !== false;
 }
 
 export function getBaseLevelScore(level: UserLevel): number {
@@ -231,6 +257,33 @@ export function applyLookupFeedback(
     ...updated,
     levelScore: stateIsKnown(profile, word) ? updated.levelScore : clampLevelScore(updated.levelScore + delta)
   };
+}
+
+/**
+ * 将词标为不认识（不调整等级分）。用于联网补查成功后的默认状态。
+ * 已标为认识的词保持不变。
+ *
+ * @param profile 用户画像。
+ * @param word 单词。
+ * @param seenAt 时间戳。
+ * @returns 更新后的画像。
+ */
+export function markWordAsUnknown(profile: UserProfile, word: string, seenAt: number): UserProfile {
+  return updateWord(profile, word, (state) => {
+    if (state.isKnown) {
+      return {
+        ...state,
+        lastSeenAt: Math.max(state.lastSeenAt, seenAt)
+      };
+    }
+
+    return {
+      ...state,
+      isKnown: false,
+      isUnknown: true,
+      lastSeenAt: seenAt
+    };
+  });
 }
 
 function stateIsKnown(profile: UserProfile, word: string): boolean {

@@ -24,8 +24,9 @@ export interface PlacementConstraints {
 }
 
 const EDGE_MARGIN = 8;
-const HORIZONTAL_GAP = 8;
-const HIGH_LIFT = 20;
+const HORIZONTAL_GAP = 6;
+/** 略抬高以免盖住同行文字，但保持可 hover 穿越的距离。 */
+const HIGH_LIFT = 10;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));

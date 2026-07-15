@@ -152,5 +152,5 @@ export function onlineLookupStatusMessage(result: {
     return baseMessage;
   }
 
-  return `${baseMessage}。已加入重试队列，稍后自动重试。`;
+  return `${baseMessage}，已加入重试，可稍后在弹窗查看`;
 }

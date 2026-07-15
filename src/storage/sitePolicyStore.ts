@@ -1,4 +1,4 @@
-import { isSiteMode } from '../core/sitePolicy';
+import { isSiteMode, normalizeExcludeSelectors } from '../core/sitePolicy';
 import type { SitePolicies, SitePolicy } from '../core/types';
 import type { KeyValueStore } from './browserAdapter';
 
@@ -14,8 +14,11 @@ function normalizeSitePolicy(value: unknown): SitePolicy | undefined {
     return undefined;
   }
 
+  const excludeSelectors = normalizeExcludeSelectors(policy.excludeSelectors);
   return {
     mode: policy.mode,
+    excludeSelectors: excludeSelectors.length ? excludeSelectors : undefined,
+    allowSameOriginFrames: policy.allowSameOriginFrames === true ? true : undefined,
     updatedAt: policy.updatedAt
   };
 }

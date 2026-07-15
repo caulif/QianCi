@@ -70,7 +70,7 @@ describe('content always annotate undo', () => {
     const target = document.querySelector('[data-qianci-word="unobtrusive"]') as HTMLElement;
     target.click();
     await Promise.resolve();
-    tooltipButtonByText('继续提醒')?.click();
+    tooltipButtonByText('总是提醒')?.click();
     await Promise.resolve();
 
     expect(onAlwaysAnnotate).toHaveBeenCalledWith(
@@ -81,7 +81,7 @@ describe('content always annotate undo', () => {
         })
       })
     );
-    expect(tooltipText()).toContain('会继续提醒');
+    expect(tooltipText()).toContain('已设为总是提醒');
     expect(tooltipButtonByText('撤销')).not.toBeNull();
 
     tooltipButtonByText('撤销')?.click();
@@ -95,7 +95,7 @@ describe('content always annotate undo', () => {
         })
       })
     );
-    expect(tooltipText()).not.toContain('会继续提醒');
+    expect(tooltipText()).not.toContain('已设为总是提醒');
     expect(document.querySelector('[data-qianci-word="unobtrusive"]')).not.toBeNull();
     app.dispose();
   });

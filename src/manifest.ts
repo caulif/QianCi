@@ -20,7 +20,9 @@ const manifest: ManifestV3Export = {
     {
       matches: ['http://*/*', 'https://*/*'],
       js: ['src/content/index.ts'],
-      run_at: 'document_idle'
+      run_at: 'document_idle',
+      // 默认在 framePolicy 中 top-frame-only；仅站点显式 opt-in 时同源 frame 才会 bootstrap。
+      all_frames: true
     }
   ]
 };

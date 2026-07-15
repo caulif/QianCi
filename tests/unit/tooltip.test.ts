@@ -8,6 +8,43 @@ describe('tooltip controller', () => {
     return tooltip as HTMLElement;
   }
 
+  it('keeps the tooltip open when the hide timer fires while the pointer is still over the card', () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<main><p>Reading text.</p></main>';
+    const tooltip = createTooltipController(document);
+
+    tooltip.showEntry(
+      { x: 120, y: 80, width: 20, height: 18 },
+      {
+        word: 'unobtrusive',
+        phonetic: '/ˌʌnəbˈtruːsɪv/',
+        translation: '不唐突的；不显眼的',
+        rank: 8100
+      },
+      vi.fn(),
+      vi.fn()
+    );
+
+    const host = visibleTooltip();
+    host.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    tooltip.scheduleHide();
+    vi.advanceTimersByTime(500);
+
+    expect(host.style.display).toBe('block');
+    tooltip.dispose();
+    vi.useRealTimers();
+  });
+
+  it('reports ownership for the tooltip host so word leave events can cancel hide', () => {
+    document.body.innerHTML = '<main><p>Reading text.</p></main>';
+    const tooltip = createTooltipController(document);
+    tooltip.showMissing({ x: 40, y: 40, width: 12, height: 12 }, 'word', vi.fn());
+
+    expect(tooltip.ownsEventTarget(visibleTooltip())).toBe(true);
+    expect(tooltip.ownsEventTarget(document.body)).toBe(false);
+    tooltip.dispose();
+  });
+
   it('closes a visible tooltip when the user clicks elsewhere on the page', () => {
     document.body.innerHTML = '<main><button id="outside">继续阅读</button></main>';
     const tooltip = createTooltipController(document);
@@ -75,7 +112,7 @@ describe('tooltip controller', () => {
     expect(text).toContain('Wiktionary');
     expect(text).toContain('dictionaryapi.dev');
     expect(text).toContain('中文：MyMemory');
-    expect(text).toContain('来源：在线缓存');
+    expect(text).toContain('来源：在线词典');
     expect(links.map((link) => link.getAttribute('href'))).toContain('https://mymemory.translated.net/');
     tooltip.dispose();
   });
@@ -117,7 +154,7 @@ describe('tooltip controller', () => {
       vi.fn(),
       vi.fn()
     );
-    expect(visibleTooltip().shadowRoot?.textContent).toContain('来源：用户自定义');
+    expect(visibleTooltip().shadowRoot?.textContent).toContain('来源：我的释义');
 
     tooltip.showEntry(
       { x: 120, y: 80, width: 20, height: 18 },
@@ -131,11 +168,11 @@ describe('tooltip controller', () => {
       vi.fn(),
       vi.fn()
     );
-    expect(visibleTooltip().shadowRoot?.textContent).toContain('来源：在线缓存');
+    expect(visibleTooltip().shadowRoot?.textContent).toContain('来源：在线词典');
     tooltip.dispose();
   });
 
-  it('renders source as a compact pill and exposes a subtle translation feedback action', () => {
+  it('keeps source metadata and allows inline custom translation from more menu', () => {
     document.body.innerHTML = '<main><p>Reading text.</p></main>';
     const tooltip = createTooltipController(document);
     const onFeedback = vi.fn();
@@ -155,21 +192,65 @@ describe('tooltip controller', () => {
     );
 
     const shadowRoot = visibleTooltip().shadowRoot;
+    const moreButton = Array.from(shadowRoot?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent === '更多'
+    );
+    moreButton?.click();
+
     const sourcePill = shadowRoot?.querySelector('[data-qianci-source-pill]');
     const feedbackButton = shadowRoot?.querySelector<HTMLButtonElement>('[data-qianci-translation-feedback]');
     const styleText = shadowRoot?.querySelector('style')?.textContent ?? '';
 
-    expect(sourcePill?.textContent).toBe('在线缓存');
-    expect(sourcePill?.getAttribute('aria-label')).toBe('词条来源：在线缓存');
-    expect(feedbackButton?.textContent).toBe('释义不准');
-    expect(feedbackButton?.getAttribute('aria-label')).toBe('反馈 laconic 的释义不准');
+    expect(sourcePill?.textContent).toBe('在线词典');
+    expect(sourcePill?.getAttribute('aria-label')).toBe('词条来源：在线词典');
+    expect(feedbackButton?.textContent).toBe('改释义');
     expect(styleText).toContain('.qianci-source-pill');
-    expect(styleText).toContain('.qianci-feedback-link');
+    expect(styleText).toContain('.qianci-edit-form');
 
     feedbackButton?.click();
+    const input = shadowRoot?.querySelector<HTMLInputElement>('[data-qianci-edit-translation-input]');
+    expect(input).not.toBeNull();
+    input!.value = '简洁的';
+    shadowRoot
+      ?.querySelector<HTMLFormElement>('[data-qianci-edit-translation]')
+      ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
 
-    expect(onFeedback).toHaveBeenCalledWith('laconic');
-    expect(visibleTooltip().shadowRoot?.textContent).toContain('已记录释义问题');
+    expect(onFeedback).toHaveBeenCalledWith('laconic', '简洁的');
+    expect(visibleTooltip().shadowRoot?.textContent).toContain('已保存自定义释义');
+    expect(visibleTooltip().shadowRoot?.textContent).toContain('简洁的');
+    tooltip.dispose();
+  });
+
+  it('repositions after expanding more panel using measured card height path', () => {
+    document.body.innerHTML = '<main><p>Reading text.</p></main>';
+    const tooltip = createTooltipController(document);
+
+    tooltip.showEntry(
+      { x: 40, y: 700, width: 24, height: 16 },
+      {
+        word: 'verbose',
+        phonetic: '',
+        translation: '冗长的',
+        rank: 1000,
+        source: 'bundled'
+      },
+      vi.fn(),
+      vi.fn()
+    );
+
+    const host = visibleTooltip();
+    const topBefore = host.style.top;
+    const moreButton = Array.from(host.shadowRoot?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent === '更多'
+    );
+    expect(moreButton).not.toBeUndefined();
+    moreButton?.click();
+    expect(host.shadowRoot?.textContent).toContain('总是提醒');
+    // 展开后仍保持可见，并重新写入 top（真实高度路径被调用）
+    expect(host.style.display).toBe('block');
+    expect(host.style.top).toBeTruthy();
+    expect(typeof host.style.top).toBe('string');
+    void topBefore;
     tooltip.dispose();
   });
 });

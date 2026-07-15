@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildOnlineDictionaryEntry, fetchOnlineDictionaryEntry } from '../../src/background/onlineDictionary';
+import {
+  buildOnlineDictionaryEntry,
+  fetchOnlineDictionaryEntry,
+  resetOnlineDictionaryRuntimeState
+} from '../../src/background/onlineDictionary';
 
 function createJsonResponse(status: number, payload: unknown): Response {
   return {
@@ -12,6 +16,7 @@ function createJsonResponse(status: number, payload: unknown): Response {
 describe('online dictionary parser', () => {
   afterEach(() => {
     vi.useRealTimers();
+    resetOnlineDictionaryRuntimeState();
   });
 
   it('builds a normalized entry from direct Chinese translations', () => {
@@ -93,7 +98,8 @@ describe('online dictionary parser', () => {
         })
       )
       .mockResolvedValueOnce(createJsonResponse(503, { message: 'translation unavailable' }))
-      .mockResolvedValueOnce(createJsonResponse(503, { message: 'fallback translation unavailable' }));
+      .mockResolvedValueOnce(createJsonResponse(503, { message: 'fallback translation unavailable' }))
+      .mockResolvedValueOnce(createJsonResponse(503, { message: 'google translation unavailable' }));
 
     const result = await fetchOnlineDictionaryEntry('serendipity', fetchMock as never);
 
@@ -102,6 +108,70 @@ describe('online dictionary parser', () => {
       errorKind: 'not_found',
       message: '在线词典暂无中文释义'
     });
+  });
+
+  it('falls back to Google gtx when MyMemory and Lingva cannot translate', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonResponse(200, {
+          word: 'serendipity',
+          entries: [
+            {
+              pronunciations: [{ type: 'ipa', text: '/ˌserənˈdɪpəti/' }],
+              senses: [{ definition: 'The phenomenon of making an unplanned fortunate discovery.' }]
+            }
+          ]
+        })
+      )
+      .mockResolvedValueOnce(createJsonResponse(503, { message: 'mymemory down' }))
+      .mockResolvedValueOnce(createJsonResponse(503, { message: 'lingva down' }))
+      .mockResolvedValueOnce(
+        createJsonResponse(200, [[['意外幸运发现的现象', 'The phenomenon of making an unplanned fortunate discovery.']]])
+      );
+
+    const result = await fetchOnlineDictionaryEntry('serendipity', fetchMock as never);
+
+    expect(result.ok).toBe(true);
+    expect(result.entry).toEqual(
+      expect.objectContaining({
+        word: 'serendipity',
+        translation: '意外幸运发现的现象',
+        attribution: expect.objectContaining({
+          translationServiceLabel: 'Google Translate',
+          translationServiceUrl: 'https://translate.google.com/'
+        })
+      })
+    );
+    expect(String(fetchMock.mock.calls[3][0])).toContain('translate.googleapis.com');
+  });
+
+  it('machine-translates the word when both dictionary providers fail', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createJsonResponse(404, { message: 'missing primary' }))
+      .mockResolvedValueOnce(createJsonResponse(404, { message: 'missing secondary' }))
+      .mockResolvedValueOnce(
+        createJsonResponse(200, {
+          responseData: {
+            translatedText: '韧性'
+          }
+        })
+      );
+
+    const result = await fetchOnlineDictionaryEntry('resilience', fetchMock as never);
+
+    expect(result.ok).toBe(true);
+    expect(result.entry).toEqual(
+      expect.objectContaining({
+        word: 'resilience',
+        translation: '韧性',
+        attribution: expect.objectContaining({
+          serviceLabel: '机器翻译',
+          translationServiceLabel: 'MyMemory'
+        })
+      })
+    );
   });
 
   it('falls back to Lingva when MyMemory cannot translate a definition', async () => {
@@ -333,9 +403,14 @@ describe('online dictionary parser', () => {
         })
     );
 
-    const resultPromise = fetchOnlineDictionaryEntry('slow', fetchMock as never, { timeoutMs: 25 });
+    // per-step timeout short + total budget short so waterfall cannot outrun the test clock.
+    const resultPromise = fetchOnlineDictionaryEntry('slow', fetchMock as never, {
+      timeoutMs: 25,
+      totalBudgetMs: 40
+    });
 
-    await vi.advanceTimersByTimeAsync(50);
+    // 主词典、备用词典与机翻兜底都会各自触发超时，需要推进足够的假时间。
+    await vi.advanceTimersByTimeAsync(500);
     await expect(resultPromise).resolves.toMatchObject({
       ok: false,
       errorKind: 'timeout'
@@ -375,4 +450,36 @@ describe('online dictionary parser', () => {
       message: '在线词典暂无中文释义'
     });
   });
+
+  it('deduplicates concurrent lookups for the same word', async () => {
+    let resolveFetch: ((value: Response) => void) | undefined;
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        })
+    );
+
+    const first = fetchOnlineDictionaryEntry('shared', fetchMock as never);
+    const second = fetchOnlineDictionaryEntry('shared', fetchMock as never);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveFetch?.(
+      createJsonResponse(200, {
+        word: 'shared',
+        entries: [
+          {
+            senses: [{ translations: [{ language: { code: 'zh' }, word: '共享的' }] }]
+          }
+        ]
+      })
+    );
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    expect(a.entry?.translation).toBe('共享的');
+    expect(b.entry?.translation).toBe('共享的');
+  });
 });
+

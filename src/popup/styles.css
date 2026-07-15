@@ -15,32 +15,246 @@ body {
   padding: 14px;
 }
 
-.popup-header h1 {
-  margin: 0;
-  font-size: 17px;
+.status-card {
+  padding: 10px;
+  border: 1px solid #e6dfd2;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.status-card-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: #2f2a24;
+}
+
+.status-card-summary {
+  margin: 6px 0 0;
+  color: #3d3933;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.status-card-hint {
+  margin: 6px 0 0;
+  color: #8a5d2a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.status-card-tip {
+  margin: 6px 0 0;
+  color: #7a7368;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.site-control-panel {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #e5e0d6;
+  border-radius: 8px;
+  background: #fffefb;
+}
+
+.site-current-mode {
+  font-size: 12px;
+  font-weight: 650;
+  color: #4f4a43;
+}
+
+.site-quick-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.site-quick-button {
+  min-height: 36px;
+  padding: 6px 4px;
+  border: 1px solid #ddd7cd;
+  border-radius: 7px;
+  background: #f4f1ea;
+  color: #333;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.site-quick-button:focus-visible,
+.fold-toggle:focus-visible {
+  outline: 2px solid #74664f;
+  outline-offset: 2px;
+}
+
+.fold-toggle {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: #6c665d;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fold-body {
+  margin-top: 8px;
+}
+
+.tools-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tools-row .diagnostics-button {
+  margin-top: 0;
+}
+
+.popup-footer {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.lookup-panel {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #e5e0d6;
+  border-radius: 8px;
+  background: #fffefb;
+}
+
+.lookup-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: #4f4a43;
+}
+
+.lookup-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.lookup-input {
+  min-width: 0;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid #ddd7cd;
+  border-radius: 6px;
+  background: #fff;
+  color: #26231f;
+  font-size: 13px;
+}
+
+.lookup-submit {
+  min-width: 56px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #cfc7b8;
+  border-radius: 6px;
+  background: #f4f1ea;
+  color: #333;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lookup-submit:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.lookup-result {
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  background: #f7f5f0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #3d3933;
+}
+
+.lookup-result-word {
+  font-size: 13px;
   font-weight: 650;
 }
 
-.popup-header p {
-  margin: 4px 0 0;
+.lookup-result-translation {
+  margin-top: 4px;
+}
+
+.lookup-result-meta {
+  margin-top: 4px;
   color: #7a7368;
+  font-size: 11px;
+}
+
+.lookup-known-button {
+  margin-top: 8px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid #cfc7b8;
+  border-radius: 6px;
+  background: #f4f1ea;
+  color: #333;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lookup-known-button:focus-visible {
+  outline: 2px solid #74664f;
+  outline-offset: 2px;
+}
+
+.site-extra-panel {
+  margin-top: 0;
+  padding: 8px;
+  border: 1px solid #e5e0d6;
+  border-radius: 8px;
+  background: #faf8f4;
+}
+
+.site-extra-label {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  color: #4f4a43;
   font-size: 12px;
 }
 
-.site-key {
-  margin-top: 12px;
-  padding: 8px;
-  border-radius: 7px;
-  background: #efede8;
-  color: #4f4a43;
+.site-exclude-input {
+  width: 100%;
+  min-height: 64px;
+  padding: 6px 8px;
+  border: 1px solid #ddd7cd;
+  border-radius: 6px;
+  background: #fff;
+  color: #26231f;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.site-extra-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #3d3933;
   font-size: 12px;
-  word-break: break-all;
+  cursor: pointer;
 }
 
 .mode-list {
   display: grid;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 6px;
+  margin-top: 0;
 }
 
 .mode-button,
@@ -61,7 +275,9 @@ body {
 .mode-button:focus-visible,
 .retry-summary-button:focus-visible,
 .settings-button:focus-visible,
-.diagnostics-button:focus-visible {
+.diagnostics-button:focus-visible,
+.lookup-submit:focus-visible,
+.lookup-input:focus-visible {
   outline: 2px solid #74664f;
   outline-offset: 2px;
 }
@@ -81,9 +297,9 @@ body {
 .diagnostics-panel {
   margin-top: 12px;
   padding: 10px;
-  border: 1px solid #e6dfd2;
+  border: 1px solid #e5e0d6;
   border-radius: 8px;
-  background: #fffdf8;
+  background: #fffefb;
 }
 
 .diagnostics-title {
@@ -143,13 +359,17 @@ body {
 }
 
 .settings-button {
-  margin-top: 12px;
+  margin-top: 0;
   text-align: center;
 }
 
 .retry-summary-button {
-  margin-top: 12px;
+  margin-top: 0;
   color: #4f4a43;
   background: #fff8e8;
   text-align: center;
+}
+
+.lookup-panel {
+  margin-top: 12px;
 }

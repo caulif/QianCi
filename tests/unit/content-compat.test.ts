@@ -268,15 +268,16 @@ describe('content compatibility', () => {
     app.dispose();
   });
 
-  it('does not treat a click on an annotated word as lookup while text selection is active', async () => {
+  it('does not treat a click on an annotated word as lookup while a multi-word selection is active', async () => {
     document.body.innerHTML = '<article><p>The unobtrusive article remains readable.</p></article>';
     const onLookup = vi.fn();
     const dictionary = {
       unobtrusive: { word: 'unobtrusive', phonetic: '/x/', translation: '不显眼的', rank: 8100 }
     };
+    // G2: only phrase/long drag yields; single-token residual no longer blocks click lookup.
     vi.spyOn(document, 'getSelection').mockReturnValue({
       isCollapsed: false,
-      toString: () => 'unobtrusive',
+      toString: () => 'The unobtrusive article',
       rangeCount: 0
     } as Selection);
 
