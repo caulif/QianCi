@@ -1,6 +1,6 @@
 {
   "name": "qianci",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "A minimal browser extension for predictive English word lookup while reading.",
   "license": "MIT",

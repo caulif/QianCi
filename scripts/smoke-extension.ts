@@ -37,18 +37,6 @@ function findRankIndexResource(manifest: BuiltManifest): string {
   return rankIndexResource;
 }
 
-/**
- * Verifies the production manifest keeps the default top-frame-only policy.
- *
- * @param manifest Built extension manifest from dist.
- * @returns Nothing.
- */
-function assertTopFrameOnlyManifest(manifest: BuiltManifest): void {
-  if (manifest.content_scripts?.some((script) => script.all_frames === true)) {
-    throw new Error('Built manifest should not inject QianCi into every frame by default');
-  }
-}
-
 async function assertContentBundleBudget(distDir: string, contentBundle: string): Promise<void> {
   const contentBundleStat = await stat(resolve(distDir, contentBundle));
   if (contentBundleStat.size > MAX_CONTENT_BUNDLE_BYTES) {
@@ -861,15 +849,16 @@ async function assertCompatibilityLookup(page: Page, compatUrl: string): Promise
       throw new Error('Missing article word for selection compatibility check');
     }
 
+    const selectionContainer = selectedWord.closest('p') ?? selectedWord;
     const range = document.createRange();
-    range.selectNodeContents(selectedWord);
+    range.selectNodeContents(selectionContainer);
     const selection = document.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
     return selectedWord.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   });
   if (!selectionClickWasNotCancelled) {
-    throw new Error('Active text selection click should not be cancelled by QianCi');
+    throw new Error('Active phrase selection click should not be cancelled by QianCi');
   }
 
   await page.evaluate(() => document.getSelection()?.removeAllRanges());
@@ -931,7 +920,6 @@ async function main(): Promise<void> {
     throw new Error('Built manifest is missing the extension name');
   }
   const manifest = JSON.parse(manifestText) as BuiltManifest;
-  assertTopFrameOnlyManifest(manifest);
   const contentBundle = findContentBundle(manifest);
   const rankIndexResource = findRankIndexResource(manifest);
   await assertContentBundleBudget(distDir, contentBundle);

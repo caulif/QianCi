@@ -3,7 +3,7 @@ import type { ManifestV3Export } from '@crxjs/vite-plugin';
 const manifest: ManifestV3Export = {
   manifest_version: 3,
   name: '潜词',
-  version: '0.1.1',
+  version: '0.2.0',
   description: '极简英文网页单词预判与查词扩展',
   permissions: ['storage', 'contextMenus', 'tabs', 'alarms'],
   host_permissions: ['http://*/*', 'https://*/*'],
